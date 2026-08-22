@@ -165,7 +165,8 @@ def parse_view(html: str, source: str = "") -> dict:
         cx = float(tr.group(1)) + float(wh.group(1)) / 2
         name = label_for(bs, bid).lstrip(":").strip()
         participants.append({"x": cx, "name": name or f"object {bid}",
-                             "semantic": b["semantic"], "bizzid": bid})
+                             "semantic": b["semantic"], "bizzid": bid,
+                             "key": bid})
     participants.sort(key=lambda p: p["x"])
 
     def column(x: float):
@@ -184,7 +185,9 @@ def parse_view(html: str, source: str = "") -> dict:
             "y": y1, "x1": x1, "x2": x2,
             "from": src["name"] if src else "?",
             "to": dst["name"] if dst else "?",
-            "self": bool(src and dst and src["name"] == dst["name"]),
+            "from_key": src["key"] if src else None,
+            "to_key": dst["key"] if dst else None,
+            "self": bool(src and dst and src["key"] == dst["key"]),
             "text": label_for(bs, bid), "semantic": b["semantic"],
         })
     messages.sort(key=lambda m: m["y"])
@@ -261,25 +264,38 @@ def parse_view(html: str, source: str = "") -> dict:
     for b in bs.values():
         concepts[b["concept"]] += 1
 
+    m = re.search(r'<svg version=[^>]*?bizzid="(\d+)"', svg)
+    view_id = m.group(1) if m else ""
+
     title = diagram_title(bs, svg)
     if title in ("", "diagram"):
-        title = title_from_view_data(source, svg) or title
+        title = title_from_view_data(source, svg) or (
+            f"View {view_id}" if view_id else "diagram")
 
-    return {"title": title, "participants": participants,
+    return {"title": title, "view_id": view_id, "participants": participants,
             "messages": messages, "fragments": fragments,
             "classes": classes, "edges": edges, "unassigned_attrs": unassigned,
             "concepts": dict(concepts)}
 
 
-def alias(name: str, seen: dict) -> str:
+def alias(name: str, used: set) -> str:
+    """A unique alias per participant INSTANCE.
+
+    A diagram can show the same service domain on two lifelines — "Customer
+    Product and Service Directory" appears twice in the sweep-agreement
+    diagrams, and "Savings Account" twice in interest settlement. They are
+    distinct participants with distinct object ids, so they need distinct
+    aliases; emitting the same alias twice is invalid PlantUML and silently
+    merges two columns into one.
+    """
     a = re.sub(r"[^A-Za-z0-9]", "", name) or "P"
     if a[0].isdigit():
         a = "P" + a
     base, n = a, 2
-    while seen.get(a, name) != name:
-        a = f"{base}{n}"
+    while a in used:
+        a = f"{base}_{n}"
         n += 1
-    seen[a] = name
+    used.add(a)
     return a
 
 
@@ -303,9 +319,9 @@ def class_plantuml(d: dict, source: str) -> str:
     if d["title"]:
         L += [f"title {d['title']}", ""]
 
-    seen, aliases = {}, {}
+    used, aliases = set(), {}
     for cid, c in sorted(d["classes"].items(), key=lambda kv: (kv[1]["x"], kv[1]["y"])):
-        a = alias(c["name"], seen)
+        a = alias(c["name"], used)
         aliases[cid] = a
         sem = f"  ' object {c['semantic']}" if c["semantic"] else ""
         L.append(f'class "{c["name"]}" as {a} {{{sem}')
@@ -340,18 +356,17 @@ def to_plantuml(d: dict, source: str) -> str:
         L.append(f"title {d['title']}")
         L.append("")
 
-    seen: dict = {}
-    aliases = {}
+    used: set = set()
     for p in d["participants"]:
-        a = alias(p["name"], seen)
-        aliases[p["name"]] = a
+        p["alias"] = alias(p["name"], used)
         sem = f"  ' object {p['semantic']}" if p["semantic"] else ""
-        L.append(f'participant "{p["name"]}" as {a}{sem}')
+        L.append(f'participant "{p["name"]}" as {p["alias"]}{sem}')
     L.append("")
 
+    by_key = {p["key"]: p["alias"] for p in d["participants"]}
     for m in d["messages"]:
-        src = aliases.get(m["from"], "?")
-        dst = aliases.get(m["to"], "?")
+        src = by_key.get(m["from_key"], "?")
+        dst = by_key.get(m["to_key"], "?")
         text = m["text"].replace("\n", " ").strip() or "(unlabelled)"
         arrow = "->" if not m["self"] else "->"
         L.append(f"{src} {arrow} {dst} : {text}")
@@ -465,8 +480,12 @@ def main():
         else:
             print("  neither a sequence nor a class diagram, skipped", flush=True)
             continue
+        # The view id is always in the filename. Titles are not unique —
+        # three class diagrams all fell back to "diagram" and silently
+        # overwrote one another, leaving one file where there should be three.
         slug = re.sub(r"[^a-z0-9]+", "-", d["title"].lower()).strip("-")[:60]
-        path = outdir / f"{slug or 'diagram'}-{kind}.puml"
+        vid = d.get("view_id") or "x"
+        path = outdir / f"{vid}-{slug or 'diagram'}-{kind}.puml"
         path.write_text(body, encoding="utf-8")
         print(f"  wrote {path}", flush=True)
         written += 1
