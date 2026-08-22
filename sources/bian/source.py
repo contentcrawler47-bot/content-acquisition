@@ -64,19 +64,43 @@ CANARY_NAME = "Consumer Loan"
 
 # The V14.0 value chain view (views/view_54486.html) shows 340 service domains.
 # Anything materially below that means shards are being missed again.
-EXPECTED_SERVICE_DOMAINS = 340
-MIN_SERVICE_DOMAINS = 330
-MIN_OBJECTS = 20000
-MIN_SHARDS = 20
+# The full model holds more service domains than the value chain view depicts
+# (367 vs 340), since not every domain appears on that diagram.
+EXPECTED_SERVICE_DOMAINS = 367
+MIN_SERVICE_DOMAINS = 340
+# After allowlist filtering, roughly 11,000 of 128,000 objects remain.
+MIN_OBJECTS = 8000
+MIN_SHARDS = 40
 
 SKIP_RELATION_VERBS = {"", "<unknown role>"}
 
+# The full landscape is 128,000 objects, but only about a tenth is BIAN
+# semantic content. The rest is UML and ArchiMate modelling furniture:
+# Attribute (14,983), Execution specification (7,248), Enumeration literal
+# (5,171), Message (5,149), Line (3,922), Graphical shape (3,313) and so on,
+# across 140+ categories.
+#
+# An allowlist is the only maintainable approach at that scale — a new junk
+# category upstream is then ignored by default rather than silently bloating
+# the output. Anything omitted here is still in objects_raw.json.
+INCLUDE_CATEGORIES = {
+    # Core service model
+    "ServiceDomain", "Service Domain", "ServiceOperation", "ServiceOperationType",
+    "ServiceGroup", "SDServiceGroup", "BusinessService", "Business service",
+    # Information model
+    "ControlRecord", "AssetType", "AnalyticsObject", "Business object",
+    "BehaviorQualifier", "BehaviorQualifierType", "ReferenceInformation",
+    "BIAN Data Type", "BIAN DataType",
+    # Structure and classification
+    "BusinessArea", "BusinessDomain", "BusinessConcept", "FunctionalPattern",
+    "Capability", "Grouping", "GenericArtifact", "ActionTerm",
+    "Business Scenario",
+}
+
+
 # ArchiMate models relationships as first-class objects. They carry no
 # documentation of their own and the edges they represent are already rendered
-# inline on each real object, so emitting them as items would inflate the
-# output by roughly a third and dilute every read.
-#
-# Stereotypes/types that are structural rather than content:
+# inline on each real object. Kept as a second line of defence.
 EXCLUDE_CATEGORIES = {
     "Flow relation", "Triggering relation", "Realization relation",
     "Serving relation", "Association relation", "Composition relation",
@@ -91,6 +115,11 @@ def _is_structural(category: str, name: str) -> bool:
     return (category in EXCLUDE_CATEGORIES
             or category.endswith(" relation")
             or (name or "").endswith(" relation"))
+
+
+def _is_wanted(category: str, name: str) -> bool:
+    """Keep only BIAN semantic content."""
+    return category in INCLUDE_CATEGORIES and not _is_structural(category, name)
 
 
 def _download(url: str) -> str:
@@ -350,7 +379,7 @@ class Source(BaseSource):
             nm = first.get("name")
             names[oid] = nm if isinstance(nm, str) else ""
 
-        items, excluded, skipped = [], 0, []
+        items, excluded, skipped, dropped = [], 0, [], {}
         for oid, obj in objects.items():
             data = _l(_d(obj).get("data"))
             if not data or not isinstance(data[0], dict):
@@ -363,11 +392,20 @@ class Source(BaseSource):
                 skipped.append((oid, f"{type(e).__name__}"))
                 continue
             name = names.get(oid, "")
-            if _is_structural(category, name):
+            if not _is_wanted(category, name):
                 excluded += 1
+                dropped[category] = dropped.get(category, 0) + 1
                 continue
             items.append({"id": oid, "name": name,
                           "category": category, "body": body})
+
+        print(f"  kept {len(items)} of {len(objects)} objects "
+              f"({excluded} filtered out as non-content)", flush=True)
+        top = sorted(dropped.items(), key=lambda kv: -kv[1])[:12]
+        if top:
+            print("  largest filtered categories:", flush=True)
+            for cat, n in top:
+                print(f"    {cat:<32} {n:>7}", flush=True)
 
         if skipped:
             print(f"  skipped {len(skipped)} malformed objects "
@@ -387,8 +425,8 @@ class Source(BaseSource):
                 f"Merged from {len(shards)} data shards "
                 f"({len(objects)} unique objects).",
                 f"Objects with relationships: {len(relations)}.",
-                f"Structural graph objects excluded: {excluded} "
-                f"(their edges appear inline under Relationships).",
+                f"Filtered to BIAN semantic content: {len(items)} kept, "
+                f"{excluded} modelling artefacts excluded.",
                 f"Malformed objects skipped: {len(skipped)}.",
             ])
 
@@ -399,7 +437,7 @@ class Source(BaseSource):
             files_written=written["files_written"],
             notes=[f"{len(shards)} shards merged into {len(objects)} objects",
                    f"{len(relations)} objects carry relationships",
-                   f"{excluded} structural relation objects excluded",
+                   f"{excluded} non-content objects filtered out",
                    f"{len(skipped)} malformed objects skipped"]
                   + shard_notes,
         )
@@ -506,11 +544,20 @@ class Source(BaseSource):
             hint="Relationship lines point at ArchiMate relation objects "
                  "rather than real ones — the target-name filter in "
                  "_relations_block() needs widening."))
+        # Scoped to Relationships sections. The previous form matched any
+        # bullet with a numeric value, so ordinary properties such as
+        # "**Cardinality:** 1" produced false failures once the harvest grew
+        # large enough to contain them.
+        bad_targets, in_rels = 0, False
+        for line in body.splitlines():
+            if line.startswith("### "):
+                in_rels = line.strip() == "### Relationships"
+                continue
+            if in_rels and line.startswith("- **") and "(" not in line:
+                bad_targets += 1
         out.append(Check(
-            "no unresolved relation ids",
-            len(re.findall(r"^- \*\*(?!Object id)[^*]+:\*\* [\d; ]+$",
-                           body, re.M)) == 0,
-            stage=Stage.RENDER,
-            hint="Relationship targets rendered as bare numbers, meaning the "
-                 "id-to-name lookup missed them."))
+            "relationship targets resolved to names", bad_targets == 0,
+            f"{bad_targets} unresolved", stage=Stage.RENDER,
+            hint="Relationship targets rendered without a '(id)' suffix, "
+                 "meaning the id-to-name lookup missed them."))
         return out
