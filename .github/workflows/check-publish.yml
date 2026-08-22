@@ -1,0 +1,59 @@
+name: Check publishing target (Google Drive)
+
+# PUBLISHING validation only. Answers one question: are the Drive credentials
+# valid and is Drive reachable?
+#
+# Touches no source. A red run here always means a PUBLISHING problem — use the
+# per-source "Validate" workflows to test extraction separately.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-publish
+  cancel-in-progress: true
+
+env:
+  RCLONE_VERSION: "1.71.1"
+
+jobs:
+  check-publish:
+    name: Can we publish to Drive?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install rclone (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          base="https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}"
+          pkg="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          curl -fsSLO "${base}/${pkg}"
+          curl -fsSLO "${base}/SHA256SUMS"
+          grep " ${pkg}\$" SHA256SUMS | sha256sum -c -
+          unzip -q "${pkg}"
+          sudo install -m 755 "rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+
+      - name: Check Drive credentials and reachability
+        env:
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python3 run.py check-publish
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "::error title=Drive check failed::This is a PUBLISHING problem, not a source problem."
+          echo "  Missing credentials -> add GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_TOKEN"
+          echo "  Rejected credentials -> the OAuth token expired or was revoked;"
+          echo "                          re-run 'rclone config' and update GDRIVE_TOKEN"
+          echo "Source extraction is unaffected — check it with the per-source Validate workflows."

@@ -1,0 +1,53 @@
+name: Reindex published sources
+
+# Rebuilds content/index.md on Drive, listing every published source with its
+# item count and last-acquired date.
+#
+# Deliberately separate from the source workflows: if each source rewrote the
+# shared index, two sources publishing at once would race over the same file.
+# Run this after adding a source, or occasionally to refresh the dates.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 4 * * 1"       # after the source runs have finished
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reindex
+  cancel-in-progress: true
+
+env:
+  RCLONE_VERSION: "1.71.1"
+
+jobs:
+  reindex:
+    name: Rebuild the top-level Drive index
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install rclone (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          base="https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}"
+          pkg="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          curl -fsSLO "${base}/${pkg}"
+          curl -fsSLO "${base}/SHA256SUMS"
+          grep " ${pkg}\$" SHA256SUMS | sha256sum -c -
+          unzip -q "${pkg}"
+          sudo install -m 755 "rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+
+      - name: Reindex
+        env:
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python3 run.py reindex

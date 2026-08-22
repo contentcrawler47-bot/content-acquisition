@@ -1,0 +1,71 @@
+name: Validate — BIAN Service Landscape
+
+# EXTRACTION validation only. Answers one question: can we still connect to
+# BIAN and pull the expected content out of it?
+#
+# References NO Google Drive secrets. A red run here therefore always means a
+# SOURCE problem — never a publishing one. Use "Check publishing target" to
+# test the Drive half separately.
+#
+# Run this when:
+#   - onboarding or changing this source
+#   - BIAN publishes a new landscape version
+#   - the scheduled harvest went red and you need to know which half broke
+#
+# Reports counts and pass/fail only, never acquired text: Actions logs on a
+# public repo are world-readable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      strict:
+        description: Fail on warnings as well as errors
+        type: boolean
+        default: false
+      timeout:
+        description: Per-endpoint probe timeout (seconds)
+        type: string
+        default: "45"
+  schedule:
+    - cron: "0 2 * * 1"        # an hour before the harvest, as an early warning
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-bian
+  cancel-in-progress: true
+
+env:
+  SOURCE_ID: bian
+
+jobs:
+  validate:
+    name: Can we extract BIAN content?
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # BIAN needs no credentials; sources that do declare them in
+      # required_secrets and add them to this step's env.
+      - name: Validate extraction
+        run: |
+          python3 run.py validate "$SOURCE_ID" \
+            --timeout "${{ inputs.timeout || '45' }}" \
+            ${{ inputs.strict && '--strict' || '' }}
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "::error title=BIAN extraction failed::Read the DIAGNOSIS block above."
+          echo "The failing STAGE tells you where to look:"
+          echo "  Connectivity — bian.org unreachable, or blocking this runner"
+          echo "  Payload      — reachable but returning the wrong thing (new version?)"
+          echo "  Parse        — format changed; fix sources/bian/source.py"
+          echo "  Extract      — parsed, but wrong items selected"
+          echo "  Render       — a bug in this repo's markdown generation"
+          echo ""
+          echo "This workflow never touches Google Drive, so publishing is not the cause."
