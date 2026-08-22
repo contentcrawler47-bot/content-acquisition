@@ -1,5 +1,3 @@
 out/
-previous_manifest.json
-ff-profile/
 __pycache__/
 .venv/
