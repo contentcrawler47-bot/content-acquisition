@@ -1,0 +1,39 @@
+name: Investigate — BIAN coverage gap
+
+# One-off investigation. Answers: why do we harvest 222 service domains when
+# the V14.0 value chain view shows 340?
+#
+# Runs three steps in order:
+#   1. harvest    — produce out/bian/ so there is something to compare against
+#   2. compare    — fetch the live V14 view and diff it against what we got
+#   3. diagnose   — probe for sibling data files and check stereotype handling
+#
+# References no Drive secrets. Prints counts and object names only — never
+# documentation text. Delete this workflow once the gap is resolved.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  investigate:
+    name: Why are service domains missing?
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: 1. Harvest BIAN
+        run: python3 run.py harvest bian
+
+      - name: 2. Compare against the live V14 value chain view
+        if: always()
+        run: python3 tools/compare_bian.py
+
+      - name: 3. Probe for other data files and check stereotypes
+        if: always()
+        run: python3 tools/diagnose_bian.py
