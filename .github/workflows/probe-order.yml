@@ -1,0 +1,33 @@
+name: Probe — message order and attribute ownership
+
+# STAGE 1b. The first probe answered Q2 with "no ordering field exists" and
+# Q1 with "no Class -> Attribute relation". This settles both fallbacks:
+#
+#   A  Do Graphical shape / Line objects carry coordinates? If so, sequence
+#      order comes from Y position — the reliable answer.
+#   B  Does id order match a coherent conversation across several diagrams?
+#   C  Is attribute-to-class ownership recoverable by any route at all?
+#
+# References no secrets. Delete once the generators exist.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-order
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Is sequence order recoverable?
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Probe ordering and ownership
+        run: python3 tools/probe_order.py
