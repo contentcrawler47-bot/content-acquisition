@@ -52,7 +52,27 @@ MIN_OBJECTS = 1000
 MIN_SERVICE_DOMAINS = 100
 
 SKIP_RELATION_VERBS = {"", "<unknown role>"}
-SKIP_RELATION_NAMES = {"Realization relation"}
+
+# ArchiMate models relationships as first-class objects. They carry no
+# documentation of their own and the edges they represent are already rendered
+# inline on each real object, so emitting them as items would inflate the
+# output by roughly a third and dilute every read.
+#
+# Stereotypes/types that are structural rather than content:
+EXCLUDE_CATEGORIES = {
+    "Flow relation", "Triggering relation", "Realization relation",
+    "Serving relation", "Association relation", "Composition relation",
+    "Aggregation relation", "Assignment relation", "Access relation",
+    "Specialization relation", "Influence relation", "Junction",
+    "Lifeline",
+}
+
+
+def _is_structural(category: str, name: str) -> bool:
+    """Structural graph artefacts, not content."""
+    return (category in EXCLUDE_CATEGORIES
+            or category.endswith(" relation")
+            or (name or "").endswith(" relation"))
 
 
 def _download(url: str) -> str:
@@ -121,7 +141,8 @@ def _relations_block(oid, relations, names) -> list[str]:
             continue
         targets = sorted(
             f"{names[str(t)]} ({t})" for t in rel.get("to", [])
-            if names.get(str(t)) and names[str(t)] not in SKIP_RELATION_NAMES)
+            if names.get(str(t))
+            and not (names[str(t)] or "").endswith(" relation"))
         if targets:
             lines.append(f"- **{via}:** " + "; ".join(targets))
     return lines + [""] if len(lines) > 1 else []
@@ -220,13 +241,17 @@ class Source(BaseSource):
         names = {oid: (o.get("data") or [{}])[0].get("name", "")
                  for oid, o in objects.items()}
 
-        items = []
+        items, excluded = [], 0
         for oid, obj in objects.items():
             data = obj.get("data") or []
             if not data:
                 continue
             body, category = _render(oid, data[0], relations, names)
-            items.append({"id": oid, "name": data[0].get("name", ""),
+            name = data[0].get("name", "")
+            if _is_structural(category, name):
+                excluded += 1
+                continue
+            items.append({"id": oid, "name": name,
                           "category": category, "body": body})
 
         written = write_bundles(
@@ -234,6 +259,8 @@ class Source(BaseSource):
             extra_index_lines=[
                 f"Landscape version: `{BASE.rsplit('/', 1)[-1]}`, view {VIEW}.",
                 f"Objects with relationships: {len(relations)}.",
+                f"Structural graph objects excluded: {excluded} "
+                f"(their edges appear inline under Relationships).",
             ])
 
         return HarvestResult(
@@ -241,7 +268,8 @@ class Source(BaseSource):
             item_count=len(items),
             categories=written["categories"],
             files_written=written["files_written"],
-            notes=[f"{len(relations)} objects carry relationships"],
+            notes=[f"{len(relations)} objects carry relationships",
+                   f"{excluded} structural relation objects excluded"],
         )
 
     def checks(self, outdir: Path) -> list[Check]:
@@ -311,6 +339,21 @@ class Source(BaseSource):
             f"{body.count('__is_translate')} found", stage=Stage.RENDER,
             hint="Internal BIAN placeholder keys reached the output — the "
                  "property-table title filter needs updating."))
+        out.append(Check(
+            "no structural relation objects emitted",
+            not any(_is_structural(m.get("category", ""), m.get("name", ""))
+                    for m in items.values()),
+            stage=Stage.EXTRACT,
+            hint="ArchiMate relation objects are being emitted as items. They "
+                 "carry no content and their edges already render inline — "
+                 "check EXCLUDE_CATEGORIES and _is_structural()."))
+        out.append(Check(
+            "no relation objects as relationship targets",
+            " relation (" not in body,
+            stage=Stage.RENDER,
+            hint="Relationship lines point at ArchiMate relation objects "
+                 "rather than real ones — the target-name filter in "
+                 "_relations_block() needs widening."))
         out.append(Check(
             "no unresolved relation ids",
             len(re.findall(r"^- \*\*(?!Object id)[^*]+:\*\* [\d; ]+$",
