@@ -2,14 +2,17 @@
 """
 BIAN Service Landscape.
 
-The landscape browser is a Backbone.js client that loads its entire dataset
-from static JavaScript files — no API, no login, no rendering step:
+The landscape browser is a Backbone.js client that loads its dataset from
+static JavaScript files — no API, no login, no rendering step:
 
-    data/all_objects_data_16.js   -> var objectData     = {id: {...}}
-    data/all_objects_relations.js -> var objectRelations = {id: [{via, to}]}
+    data/all_objects_data_N.js    -> var objectData      = {id: {...}}
+    data/all_objects_data_mapping.js -> var objectDataMapping = {id: N}
+    data/all_objects_relations.js -> var objectRelations  = {id: [{via, to}]}
 
-Keys are the same object ids used in object_16.html?object=NNNNN, so this is a
-download-and-parse job rather than a crawl.
+The model is SHARDED across ~24 numbered data files, capped around 5,000
+objects each. objectDataMapping says which shard holds each object, so the set
+of shard numbers is simply set(mapping.values()). Reading only one shard —
+as this source originally did — yields about 5% of the landscape.
 
 Credentials: none. The files are served unauthenticated.
 """
@@ -34,12 +37,20 @@ VIEW = 16
 # ---------------------------------------------------------------------------
 
 FILES = {
-    "objects":   f"{BASE}/data/all_objects_data_{VIEW}.js",
-    "relations": f"{BASE}/data/all_objects_relations.js",
     "mapping":   f"{BASE}/data/all_objects_data_mapping.js",
+    "relations": f"{BASE}/data/all_objects_relations.js",
     "on_views":  f"{BASE}/data/all_objects_on_views.js",
     "config":    f"{BASE}/data/config_data.js",
 }
+
+
+def shard_url(n: int) -> str:
+    return f"{BASE}/data/all_objects_data_{n}.js"
+
+
+#: Safety net if the mapping cannot be parsed. Shards are 1-indexed; 0 is 404.
+FALLBACK_SHARDS = range(1, 31)
+MAX_SHARDS = 60
 
 UA = "Mozilla/5.0 (compatible; content-acquisition/1.0)"
 TIMEOUT = 120
@@ -48,8 +59,13 @@ TIMEOUT = 120
 # validation fails loudly instead of quietly producing thinner output.
 CANARY_ID = "34300"
 CANARY_NAME = "Consumer Loan"
-MIN_OBJECTS = 1000
-MIN_SERVICE_DOMAINS = 100
+
+# The V14.0 value chain view (views/view_54486.html) shows 340 service domains.
+# Anything materially below that means shards are being missed again.
+EXPECTED_SERVICE_DOMAINS = 340
+MIN_SERVICE_DOMAINS = 330
+MIN_OBJECTS = 20000
+MIN_SHARDS = 20
 
 SKIP_RELATION_VERBS = {"", "<unknown role>"}
 
@@ -87,6 +103,54 @@ def _parse_js_assignment(text: str):
     if not m:
         raise ValueError("unexpected file format — no var assignment")
     return json.loads(re.sub(r";\s*$", "", text[m.end():].strip()))
+
+
+def _shard_numbers(mapping: dict) -> list[int]:
+    """Shard indices to fetch, taken from the mapping's values.
+
+    The mapping is authoritative: every object id points at the shard holding
+    it. Falls back to a probe range if the values look implausible.
+    """
+    try:
+        nums = sorted({int(v) for v in mapping.values()})
+    except Exception:
+        nums = []
+    if not nums or max(nums) > MAX_SHARDS:
+        return list(FALLBACK_SHARDS)
+    # Shards are contiguous; include any gap the mapping happens not to cite.
+    return list(range(min(nums), max(nums) + 1))
+
+
+def _fetch_shards(numbers: list[int]) -> tuple[dict, list[str]]:
+    """Download and merge every shard. First occurrence of an id wins, since
+    an object repeated across shards carries the same payload."""
+    merged: dict = {}
+    notes: list[str] = []
+    missing: list[int] = []
+
+    for n in numbers:
+        try:
+            text = _download(shard_url(n))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                missing.append(n)
+                continue
+            raise
+        try:
+            data = _parse_js_assignment(text)
+        except Exception as e:
+            notes.append(f"shard {n} unparseable ({type(e).__name__})")
+            continue
+
+        before = len(merged)
+        for oid, obj in data.items():
+            merged.setdefault(oid, obj)
+        print(f"  shard {n:<3} {len(text)/1024:>8.0f} KB  {len(data):>6} objects  "
+              f"(+{len(merged) - before} new)", flush=True)
+
+    if missing:
+        notes.append(f"shards absent: {', '.join(map(str, missing))}")
+    return merged, notes
 
 
 def _stereotypes(entry: dict) -> list[str]:
@@ -199,8 +263,18 @@ class Source(BaseSource):
         """
         return [
             ProbeSpec(
-                label="landscape data (all_objects_data_%d.js)" % VIEW,
-                url=FILES["objects"],
+                label="shard index (all_objects_data_mapping.js)",
+                url=FILES["mapping"],
+                expect_prefix="var objectDataMapping",
+                min_bytes=100_000),
+            ProbeSpec(
+                label="first data shard (all_objects_data_1.js)",
+                url=shard_url(1),
+                expect_prefix="var objectData",
+                min_bytes=200_000),
+            ProbeSpec(
+                label="last known shard (all_objects_data_24.js)",
+                url=shard_url(24),
                 expect_prefix="var objectData",
                 min_bytes=200_000),
             ProbeSpec(
@@ -213,11 +287,6 @@ class Source(BaseSource):
                 url=FILES["config"],
                 expect_prefix="var availableLanguages",
                 min_bytes=10),
-            ProbeSpec(
-                label="view mapping (all_objects_data_mapping.js)",
-                url=FILES["mapping"],
-                expect_prefix="var ",
-                optional=True),
             ProbeSpec(
                 label="objects-on-views (all_objects_on_views.js)",
                 url=FILES["on_views"],
@@ -232,7 +301,18 @@ class Source(BaseSource):
             print(f"  {key:<10} {len(text) / 1024:>8.0f} KB", flush=True)
             raw[key] = text
 
-        objects = _parse_js_assignment(raw["objects"])
+        try:
+            mapping = _parse_js_assignment(raw["mapping"])
+        except Exception:
+            mapping = {}
+        shards = _shard_numbers(mapping)
+        print(f"  {len(shards)} shards to fetch: "
+              f"{shards[0]}-{shards[-1]}", flush=True)
+
+        objects, shard_notes = _fetch_shards(shards)
+        print(f"  merged {len(objects)} unique objects from "
+              f"{len(shards)} shards", flush=True)
+
         try:
             relations = _parse_js_assignment(raw["relations"])
         except Exception:
@@ -257,7 +337,9 @@ class Source(BaseSource):
         written = write_bundles(
             outdir, self.id, self.name, items,
             extra_index_lines=[
-                f"Landscape version: `{BASE.rsplit('/', 1)[-1]}`, view {VIEW}.",
+                f"Landscape version: `{BASE.rsplit('/', 1)[-1]}`.",
+                f"Merged from {len(shards)} data shards "
+                f"({len(objects)} unique objects).",
                 f"Objects with relationships: {len(relations)}.",
                 f"Structural graph objects excluded: {excluded} "
                 f"(their edges appear inline under Relationships).",
@@ -268,8 +350,10 @@ class Source(BaseSource):
             item_count=len(items),
             categories=written["categories"],
             files_written=written["files_written"],
-            notes=[f"{len(relations)} objects carry relationships",
-                   f"{excluded} structural relation objects excluded"],
+            notes=[f"{len(shards)} shards merged into {len(objects)} objects",
+                   f"{len(relations)} objects carry relationships",
+                   f"{excluded} structural relation objects excluded"]
+                  + shard_notes,
         )
 
     def checks(self, outdir: Path) -> list[Check]:
@@ -281,17 +365,28 @@ class Source(BaseSource):
         out.append(Check(
             "object count", len(items) >= MIN_OBJECTS,
             f"{len(items)} (min {MIN_OBJECTS})", stage=Stage.EXTRACT,
-            hint="Far fewer objects than the landscape contains. Either the "
-                 "data file was truncated, or objectData is now nested "
-                 "differently and only part of it is being read."))
+            hint="Far fewer objects than the landscape contains. The most "
+                 "likely cause is that shards failed to download — check the "
+                 "per-shard lines in the harvest output."))
+
+        sd = cats.get("ServiceDomain", 0)
         out.append(Check(
-            "service domains found",
-            cats.get("ServiceDomain", 0) >= MIN_SERVICE_DOMAINS,
-            f"{cats.get('ServiceDomain', 0)} (min {MIN_SERVICE_DOMAINS})",
+            "service domain coverage", sd >= MIN_SERVICE_DOMAINS,
+            f"{sd} of ~{EXPECTED_SERVICE_DOMAINS} expected",
             stage=Stage.EXTRACT,
-            hint="Objects were extracted but few classified as ServiceDomain. "
-                 "BIAN has probably renamed the stereotype — check the "
-                 "Stereotypes block in the raw data."))
+            hint=f"The V14.0 value chain view (views/view_54486.html) shows "
+                 f"{EXPECTED_SERVICE_DOMAINS} service domains. Materially "
+                 f"fewer means data shards are being missed — this is exactly "
+                 f"the failure that had us reading 222 of 340. Check the shard "
+                 f"count in the harvest output."))
+        out.append(Check(
+            "service domain count not wildly above expectation",
+            sd <= EXPECTED_SERVICE_DOMAINS * 1.5,
+            f"{sd} vs ~{EXPECTED_SERVICE_DOMAINS} expected", warn=True,
+            stage=Stage.EXTRACT,
+            hint="More service domains than the published view shows. Either "
+                 "BIAN expanded the model, or shards contain older revisions "
+                 "of the same objects under different ids."))
 
         canary = items.get(CANARY_ID, {})
         out.append(Check(
