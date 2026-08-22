@@ -130,20 +130,53 @@ def extract(page, oid, captured):
         "text": text,
         "chars": len(text),
         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "api_urls": sorted({c["url"] for c in captured}),
-        "api_payloads": [c["body"] for c in captured][:5],
+        "api_urls": sorted({c["url"] for c in captured if c.get("body") is not None}),
+        "api_payloads": [c["body"] for c in captured if c.get("body") is not None][:5],
+        "all_responses": [
+            {"url": c["url"], "ctype": c["ctype"], "size": c["size"]}
+            for c in captured
+        ],
     }
 
 
+SKIP_TYPES = ("image/", "font/", "text/css", "video/", "audio/")
+
+
 def attach_listener(page, captured):
+    """Record every non-asset response. Data is not always served as JSON —
+    it may arrive as text/plain, application/javascript, or a static bundle."""
     def on_response(resp):
-        ctype = resp.headers.get("content-type", "")
-        if "json" in ctype.lower():
+        ctype = resp.headers.get("content-type", "").lower()
+        if any(ctype.startswith(s) for s in SKIP_TYPES):
+            return
+        entry = {"url": resp.url, "ctype": ctype.split(";")[0], "body": None}
+        if "json" in ctype:
             try:
-                captured.append({"url": resp.url, "body": resp.json()})
+                entry["body"] = resp.json()
             except Exception:
                 pass
+        try:
+            entry["size"] = int(resp.headers.get("content-length", 0))
+        except Exception:
+            entry["size"] = 0
+        captured.append(entry)
     page.on("response", on_response)
+
+
+def fingerprint(text):
+    """Describe the shape of extracted text without printing any of it.
+    Navigation chrome is many short lines; real content has long ones."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        return "no content"
+    lengths = sorted(len(l) for l in lines)
+    long_lines = sum(1 for n in lengths if n > 80)
+    return (
+        f"{len(lines)} non-blank lines | "
+        f"median line {lengths[len(lengths) // 2]} chars | "
+        f"longest {lengths[-1]} chars | "
+        f"{long_lines} lines over 80 chars"
+    )
 
 
 def write_output(records):
@@ -251,11 +284,18 @@ def main():
 
             if args.probe:
                 log("--- probe diagnostics ---")
-                log(f"title: {rec['title']}")
-                log("json endpoints observed:")
-                for u in rec["api_urls"]:
-                    log(f"  {u}")
-                log(f"first 200 chars length check: {min(200, rec['chars'])}")
+                log(f"title:  {rec['title']}")
+                log(f"shape:  {fingerprint(rec['text'])}")
+                log(f"frames: {len(page.frames)}")
+                log("")
+                log("network responses (assets excluded):")
+                if not rec["all_responses"]:
+                    log("  none captured")
+                for r in rec["all_responses"]:
+                    kb = f"{r['size'] / 1024:.0f}KB" if r["size"] else "?"
+                    log(f"  [{r['ctype'] or 'unknown':<28}] {kb:>7}  {r['url'][:150]}")
+                log("")
+                log(f"parsed JSON payloads: {len(rec['api_urls'])}")
                 browser.close()
                 return 0 if rec["chars"] >= MIN_CHARS else 2
 
