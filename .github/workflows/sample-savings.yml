@@ -1,0 +1,59 @@
+name: Sample — Savings Account diagrams
+
+# Generates PlantUML for every diagram the Savings Account service domain
+# appears on, using the geometry embedded in views/view_<id>.html.
+#
+# Handles both kinds:
+#   sequence  order from message y, direction from x1 -> x2
+#   class     attribute ownership from geometric containment — each
+#             UML_Attribute rect sits inside its UML_Class rect
+#
+# The data/*.js files contain no coordinates, so ordering, senders and
+# receivers are absent from them. The view pages carry a tagged SVG where
+# message order comes from the y coordinate and direction from x1 -> x2.
+#
+# Uploads nothing and references no secrets. The generated .puml files are
+# printed to the log so they can be reviewed without an artifact download —
+# these are structural diagrams, not documentation prose.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sample-savings
+  cancel-in-progress: true
+
+jobs:
+  sample:
+    name: Generate Savings Account diagrams
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Find and convert Savings Account views
+        run: python3 tools/view_to_plantuml.py --savings
+
+      - name: Show the generated PlantUML
+        if: always()
+        run: |
+          shopt -s nullglob
+          files=(out/diagrams/*.puml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No diagrams were generated."
+            echo "Savings Account may appear only on Total views (ArchiMate),"
+            echo "which this converter does not yet handle."
+            exit 0
+          fi
+          for f in "${files[@]}"; do
+            echo "════════════════════════════════════════════════════════"
+            echo "  $f"
+            echo "════════════════════════════════════════════════════════"
+            cat "$f"
+            echo
+          done
