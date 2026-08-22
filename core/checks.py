@@ -54,17 +54,27 @@ def probe_checks(source: Source, timeout: int = 45
     results = probe_all(specs, timeout=timeout)
     checks: list[Check] = []
     for r in results:
+        # Two distinct questions per endpoint, so a healthy run shows
+        # Connectivity actually passing rather than sitting empty:
+        #   CONNECT — did the server respond at all?
+        #   PAYLOAD — was the response the content we expected?
         reached = r.ok or r.status is not None
-        stage = Stage.CONNECT if not reached else Stage.PAYLOAD
-        if r.ok:
-            checks.append(Check(f"reach {r.spec.label}", True, r.summary,
-                                stage=stage))
-        elif r.spec.optional:
-            checks.append(Check(f"reach {r.spec.label}", False, r.summary,
-                                warn=True, stage=stage, hint=r.hint))
-        else:
-            checks.append(Check(f"reach {r.spec.label}", False, r.summary,
-                                stage=stage, hint=r.hint))
+        warn = r.spec.optional
+
+        checks.append(Check(
+            f"connect to {r.spec.label}", reached,
+            f"HTTP {r.status}, {r.seconds:.1f}s" if reached else r.summary,
+            warn=warn and not reached, stage=Stage.CONNECT,
+            hint="" if reached else r.hint))
+
+        if not reached:
+            continue
+
+        checks.append(Check(
+            f"payload from {r.spec.label}", r.ok,
+            f"{r.bytes_read / 1024:,.0f} KB as expected" if r.ok else r.summary,
+            warn=warn and not r.ok, stage=Stage.PAYLOAD,
+            hint="" if r.ok else r.hint))
     return checks, results
 
 
