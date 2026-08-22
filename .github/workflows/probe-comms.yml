@@ -1,0 +1,37 @@
+name: Probe — communication diagram feasibility
+
+# STAGE 1c. Sequence diagrams were ruled out: no ordering signal exists.
+# A COMMUNICATION diagram discards ordering and keeps the graph — who
+# exchanges what with whom — so it needs only participants per message.
+#
+# This dumps one small sequence diagram completely (every member, every
+# relation in both directions) and then walks outward from each message
+# looking for a Lifeline, ServiceDomain or Class within three hops.
+#
+#   all messages reach a participant -> communication diagrams are viable
+#   none do                          -> drop sequence content entirely
+#   some do                          -> judgement call on partial coverage
+#
+# References no secrets. Delete once the decision is made.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-comms
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Can a message reach its participants?
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Probe message-to-participant connectivity
+        run: python3 tools/probe_comms.py
