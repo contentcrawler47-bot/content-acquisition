@@ -139,6 +139,16 @@ account and its rate limits.
 Run the **Reindex published sources** workflow once so the new source appears
 in the top-level `content/index.md`.
 
+## Filter structural noise
+
+Many models represent relationships, junctions or internal bookkeeping as
+first-class objects. They have no documentation and no standalone value, and
+emitting them inflates the output while diluting every read.
+
+BIAN excludes roughly a third of its raw object count this way. If a category
+appears in large numbers with empty names and no documentation, it is probably
+structural — exclude it and add a check asserting it stays excluded.
+
 ## Design rules
 
 - **A source never imports another source.** Shared logic belongs in `core/`.
