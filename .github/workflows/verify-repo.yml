@@ -1,0 +1,70 @@
+name: Verify repo contents
+
+# Confirms the repo matches the version that was shipped — that every file was
+# added, none was truncated mid-paste, and no file from an earlier revision was
+# left behind.
+#
+# Run this after applying any set of updates, before running anything else.
+# References no secrets and writes nothing.
+#
+# The output is designed to be pasted back for review: the digest line alone
+# identifies the exact repo state.
+
+on:
+  workflow_dispatch:
+    inputs:
+      strict:
+        description: Also fail on unexpected or whitespace-only differences
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-repo
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Does the repo match the shipped version?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Verify against MANIFEST.sha256
+        id: verify
+        run: |
+          python3 tools/repo_manifest.py --verify \
+            ${{ inputs.strict && '--strict' || '' }}
+
+      # Always print the fingerprint, pass or fail — it is what makes a
+      # mismatch diagnosable rather than just red.
+      - name: Repo fingerprint
+        if: always()
+        run: python3 tools/repo_manifest.py --print
+
+      - name: Directory structure
+        if: always()
+        run: |
+          echo "Tracked files, excluding out/ and __pycache__:"
+          find . -type f \
+            -not -path './.git/*' \
+            -not -path './out/*' \
+            -not -path '*/__pycache__/*' \
+            -not -name '*.pyc' | sort
+
+      - name: What a failure means
+        if: failure()
+        run: |
+          echo "::error title=Repo out of date::See the verification output above."
+          echo "  MISSING          -> a file was never added"
+          echo "  CONTENT DIFFERS  -> replace it; a large negative byte delta"
+          echo "                      usually means a truncated paste"
+          echo "  NOT IN MANIFEST  -> a file from an earlier revision, or one"
+          echo "                      you added deliberately"
+          echo "  WHITESPACE ONLY  -> harmless; the web editor changed line"
+          echo "                      endings but the content is correct"
