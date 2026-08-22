@@ -1,42 +1,33 @@
-name: crawl
+name: harvest
 
 on:
   schedule:
-    # 03:00 UTC every Monday — 15:00 NZST / 16:00 NZDT
+    # 03:00 UTC Mondays — 15:00 NZST / 16:00 NZDT
     - cron: "0 3 * * 1"
   workflow_dispatch:
 
-# Least privilege: contents:write is needed only for the timestamp commit that
-# stops GitHub disabling the schedule after 60 days of inactivity.
 permissions:
   contents: write
 
 concurrency:
-  group: crawl
+  group: harvest
   cancel-in-progress: false
 
 env:
   RCLONE_VERSION: "1.71.1"
 
-# No artifacts are uploaded anywhere in this workflow. On a public repo they
-# would be world-readable, defeating the point of publishing to a private Drive.
+# No browser, no BIAN secrets — the data files are static and unauthenticated.
+# No artifacts are uploaded: on a public repo they would be world-readable.
 
 jobs:
-  crawl:
+  harvest:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     steps:
-      # Pin this to a commit SHA once you have set things up. Get it with:
-      #   gh api repos/actions/checkout/git/ref/tags/v5 --jq .object.sha
-      # then replace @v5 with @<sha>  # v5
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5   # pin to a SHA once stable
 
-      - name: Install Playwright
-        run: |
-          python3 -m venv .venv
-          .venv/bin/pip install --quiet --upgrade pip
-          .venv/bin/pip install --quiet playwright
-          .venv/bin/playwright install --with-deps firefox
+      - name: Harvest
+        run: python3 harvest.py
 
       - name: Install rclone (pinned, checksum verified)
         run: |
@@ -49,26 +40,6 @@ jobs:
           unzip -q "${pkg}"
           sudo install -m 755 "rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
           rm -rf "${pkg}" SHA256SUMS "rclone-v${RCLONE_VERSION}-linux-amd64"
-          rclone version | head -1
-
-      # rclone is configured entirely from environment variables, so no config
-      # file is ever written to disk and each sensitive value is its own secret
-      # rather than one structured blob.
-      - name: Pull previous manifest
-        continue-on-error: true
-        env:
-          RCLONE_CONFIG_GDRIVE_TYPE: drive
-          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
-          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
-          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
-          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-        run: rclone copyto gdrive:BIAN/manifest.json previous_manifest.json --quiet || true
-
-      - name: Crawl
-        env:
-          BIAN_NAME: ${{ secrets.BIAN_NAME }}
-          BIAN_EMAIL: ${{ secrets.BIAN_EMAIL }}
-        run: .venv/bin/python crawl.py --ids-file object_ids.txt
 
       - name: Upload to Drive
         env:
