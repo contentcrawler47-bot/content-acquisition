@@ -219,6 +219,12 @@ to read `content/index.md` first, then the relevant source's `index.md`.
 - **Version pinning.** Upstream versions live in the source that uses them —
   for BIAN, `BASE` and `VIEW` at the top of `sources/bian/source.py`. Update
   them, then run validation with publish off.
+- **Structural objects are excluded.** BIAN's model is ArchiMate, which
+  represents relationships as first-class objects (Flow relation, Triggering
+  relation, and so on). These carry no documentation and their edges already
+  render inline under each real object's Relationships section, so they are
+  filtered out — about a third of the raw object count. See
+  `EXCLUDE_CATEGORIES` in `sources/bian/source.py`.
 - **Canaries.** Each source asserts a known item is present with a known name,
   so upstream restructuring fails loudly rather than silently thinning the
   output.
