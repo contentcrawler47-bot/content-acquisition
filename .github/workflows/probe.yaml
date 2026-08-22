@@ -1,0 +1,41 @@
+name: probe
+ 
+# Run this FIRST, before bothering with the rest. It fetches a single object
+# page and reports only counts and endpoint URLs — never extracted content,
+# because logs on a public repo are world-readable.
+#
+# No Drive credentials are referenced here at all, so a failed or noisy probe
+# cannot expose them.
+ 
+on:
+  workflow_dispatch:
+    inputs:
+      object_id:
+        description: Object id to probe
+        required: true
+        default: "42877"
+ 
+permissions:
+  contents: read
+ 
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+ 
+      - name: Install Playwright
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet playwright
+          .venv/bin/playwright install --with-deps firefox
+ 
+      - name: Probe one page
+        env:
+          BIAN_NAME: ${{ secrets.BIAN_NAME }}
+          BIAN_EMAIL: ${{ secrets.BIAN_EMAIL }}
+        run: .venv/bin/python crawl.py --probe "${{ inputs.object_id }}"
