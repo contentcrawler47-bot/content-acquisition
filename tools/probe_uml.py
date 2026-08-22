@@ -48,11 +48,33 @@ def get(url, timeout=180):
         return r.read().decode("utf-8", errors="replace")
 
 
+def parse_all(text):
+    """Extract EVERY `var name = <json>;` assignment in a file.
+
+    These files are not one variable each — all_objects_on_views.js holds
+    several. raw_decode consumes one JSON value and reports where it stopped,
+    so the scan can continue from there instead of failing on "Extra data".
+    """
+    out, dec, pos = {}, json.JSONDecoder(), 0
+    while True:
+        m = re.compile(r"var\s+(\w+)\s*=\s*").search(text, pos)
+        if not m:
+            break
+        try:
+            value, end = dec.raw_decode(text, m.end())
+        except ValueError:
+            pos = m.end()
+            continue
+        out[m.group(1)] = value
+        pos = end
+    if not out:
+        raise ValueError("no parseable var assignment")
+    return out
+
+
 def parse(text):
-    m = re.match(r"\s*var\s+\w+\s*=\s*", text)
-    if not m:
-        raise ValueError("no var assignment")
-    return json.loads(re.sub(r";\s*$", "", text[m.end():].strip()))
+    """First assignment only, for callers that expect a single value."""
+    return next(iter(parse_all(text).values()))
 
 
 def d(x):
@@ -119,15 +141,47 @@ def dump(entry, indent="      "):
 
 # ---------------------------------------------------------------- load
 print("downloading model...", flush=True)
-mapping = parse(get(f"{BASE}/data/all_objects_data_mapping.js"))
-relations = parse(get(f"{BASE}/data/all_objects_relations.js"))
-on_views = parse(get(f"{BASE}/data/all_objects_on_views.js"))
+
+
+def load(name, url):
+    """Load a data file and report every variable it defines — several of
+    these files hold more than one, which is worth knowing about."""
+    vars_ = parse_all(get(url))
+    for k, v in vars_.items():
+        kind = f"{len(v)} keys" if isinstance(v, dict) else (
+            f"{len(v)} items" if isinstance(v, list) else type(v).__name__)
+        print(f"  {name}: var {k} = {kind}", flush=True)
+    return vars_
+
+
+mapping_vars = load("mapping", f"{BASE}/data/all_objects_data_mapping.js")
+relation_vars = load("relations", f"{BASE}/data/all_objects_relations.js")
+view_vars = load("on_views", f"{BASE}/data/all_objects_on_views.js")
+
+mapping = next(iter(mapping_vars.values()))
+relations = next(iter(relation_vars.values()))
+on_views = view_vars.get("objectsOnViews") or next(iter(view_vars.values()))
+
+# Any additional variables in these files are undiscovered structure —
+# possibly the diagram ordering we are looking for.
+extra = {k: v for k, v in view_vars.items() if k != "objectsOnViews"}
+if extra:
+    print("\n  ADDITIONAL VARIABLES in all_objects_on_views.js:", flush=True)
+    for k, v in extra.items():
+        print(f"    var {k}: {type(v).__name__}", flush=True)
+        if isinstance(v, dict):
+            for kk in list(v)[:3]:
+                print(f"      {kk!r}: {str(v[kk])[:120]}", flush=True)
+        elif isinstance(v, list):
+            for item in v[:3]:
+                print(f"      {str(item)[:120]}", flush=True)
 
 shard_nums = sorted({int(v) for v in mapping.values()})
 objects = {}
 for n in range(min(shard_nums), max(shard_nums) + 1):
     try:
-        for oid, obj in parse(get(f"{BASE}/data/all_objects_data_{n}.js")).items():
+        shard_vars = parse_all(get(f"{BASE}/data/all_objects_data_{n}.js"))
+        for oid, obj in next(iter(shard_vars.values())).items():
             objects.setdefault(oid, obj)
     except Exception as e:
         print(f"  shard {n}: {type(e).__name__}", flush=True)
