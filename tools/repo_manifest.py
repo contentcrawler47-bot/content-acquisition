@@ -34,7 +34,10 @@ MANIFEST = REPO / "MANIFEST.sha256"
 # Directories that never belong in the manifest.
 SKIP_DIRS = {".git", "__pycache__", "out", ".venv", ".runs", ".idea", ".vscode"}
 SKIP_SUFFIX = {".pyc", ".pyo"}
-SKIP_NAMES = {"MANIFEST.sha256", ".DS_Store"}
+# NEXT_STEPS.md is instructions handed over with a revision, not repo content.
+# Excluded from both sides of the comparison, so committing it or not makes no
+# difference to the result.
+SKIP_NAMES = {"MANIFEST.sha256", "NEXT_STEPS.md", ".DS_Store"}
 
 
 def tracked_files():
