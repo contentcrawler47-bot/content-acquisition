@@ -49,8 +49,10 @@ def shard_url(n: int) -> str:
 
 
 #: Safety net if the mapping cannot be parsed. Shards are 1-indexed; 0 is 404.
-FALLBACK_SHARDS = range(1, 31)
-MAX_SHARDS = 60
+#: 47 shards existed at v14.0, so the fallback allows generous headroom.
+FALLBACK_SHARDS = range(1, 81)
+MAX_SHARDS = 200
+LAST_KNOWN_SHARD = 47
 
 UA = "Mozilla/5.0 (compatible; content-acquisition/1.0)"
 TIMEOUT = 120
@@ -153,27 +155,45 @@ def _fetch_shards(numbers: list[int]) -> tuple[dict, list[str]]:
     return merged, notes
 
 
-def _stereotypes(entry: dict) -> list[str]:
-    for cat in entry.get("categories", []):
+# Across 47 shards the payload is not uniformly shaped: fields that are dicts
+# for most objects are occasionally bare strings. These coercions keep a single
+# oddly-shaped object from aborting a 128,000-object harvest.
+
+def _d(x) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _l(x) -> list:
+    return x if isinstance(x, list) else []
+
+
+def _categories(entry) -> list:
+    return [c for c in _l(_d(entry).get("categories")) if isinstance(c, dict)]
+
+
+def _stereotypes(entry) -> list[str]:
+    for cat in _categories(entry):
         if cat.get("type") == "table":
-            st = cat.get("content", {}).get("Stereotypes", {}).get("stereotype", {})
-            return list(st.get("value", []))
+            st = _d(_d(_d(cat.get("content")).get("Stereotypes")).get("stereotype"))
+            return [v for v in _l(st.get("value")) if isinstance(v, str)]
     return []
 
 
-def _properties(entry: dict) -> dict:
-    for cat in entry.get("categories", []):
+def _properties(entry) -> dict:
+    for cat in _categories(entry):
         if cat.get("type") == "table":
-            return cat.get("content", {})
+            return _d(cat.get("content"))
     return {}
 
 
-def _documentation(entry: dict) -> dict:
+def _documentation(entry) -> dict:
     out = {}
-    for cat in entry.get("categories", []):
+    for cat in _categories(entry):
         if cat.get("type") != "documentation":
             continue
-        text = clean_html(cat.get("content", {}).get("value", ""))
+        content = cat.get("content")
+        value = content if isinstance(content, str) else _d(content).get("value", "")
+        text = clean_html(value if isinstance(value, str) else "")
         if text:
             out[cat.get("title") or "documentation"] = text
     return out
@@ -185,27 +205,27 @@ def _flatten(value):
     if isinstance(value, dict):
         kind = value.get("type")
         if kind == "link":
-            v = value.get("value", {})
+            v = _d(value.get("value"))
             return f"{v.get('title', '')} — {v.get('location', '')}".strip(" —")
         if kind == "object":
-            return value.get("value", {}).get("name", "")
+            return _d(value.get("value")).get("name", "")
         if kind == "collection":
-            return [x for x in (_flatten(i) for i in value.get("value", [])) if x]
+            return [x for x in (_flatten(i) for i in _l(value.get("value"))) if x]
     return ""
 
 
 def _relations_block(oid, relations, names) -> list[str]:
-    rels = relations.get(str(oid)) or []
+    rels = [r for r in _l(relations.get(str(oid))) if isinstance(r, dict)]
     if not rels:
         return []
     lines = ["### Relationships"]
-    for rel in sorted(rels, key=lambda r: r.get("via", "")):
+    for rel in sorted(rels, key=lambda r: r.get("via") or ""):
         via = (rel.get("via") or "").strip()
         if via in SKIP_RELATION_VERBS:
             continue
         targets = sorted(
-            f"{names[str(t)]} ({t})" for t in rel.get("to", [])
-            if names.get(str(t))
+            f"{names[str(t)]} ({t})" for t in _l(rel.get("to"))
+            if isinstance(t, (str, int)) and names.get(str(t))
             and not (names[str(t)] or "").endswith(" relation"))
         if targets:
             lines.append(f"- **{via}:** " + "; ".join(targets))
@@ -213,10 +233,13 @@ def _relations_block(oid, relations, names) -> list[str]:
 
 
 def _render(oid, entry, relations, names) -> tuple[str, str]:
+    entry = _d(entry)
     sts = _stereotypes(entry)
-    otype = entry.get("type", "")
+    otype = entry.get("type") or ""
+    if not isinstance(otype, str):
+        otype = str(otype)
     lines = [
-        f"## {entry.get('name', f'Object {oid}')}", "",
+        f"## {entry.get('name') or f'Object {oid}'}", "",
         f"- **Object id:** {oid}",
         f"- **Type:** {otype}" + (f" ({', '.join(sts)})" if sts else ""),
         f"- **Source:** {BASE}/object_{VIEW}.html?object={oid}", "",
@@ -229,6 +252,8 @@ def _render(oid, entry, relations, names) -> tuple[str, str]:
     for group, fields in _properties(entry).items():
         if group == "Stereotypes" or not isinstance(fields, dict):
             continue
+        if not isinstance(group, str):
+            group = str(group)
         rows = []
         for key, raw in fields.items():
             val = _flatten(raw)
@@ -273,8 +298,8 @@ class Source(BaseSource):
                 expect_prefix="var objectData",
                 min_bytes=200_000),
             ProbeSpec(
-                label="last known shard (all_objects_data_24.js)",
-                url=shard_url(24),
+                label=f"last known shard (all_objects_data_{LAST_KNOWN_SHARD}.js)",
+                url=shard_url(LAST_KNOWN_SHARD),
                 expect_prefix="var objectData",
                 min_bytes=200_000),
             ProbeSpec(
@@ -318,24 +343,45 @@ class Source(BaseSource):
         except Exception:
             relations = {}
 
-        names = {oid: (o.get("data") or [{}])[0].get("name", "")
-                 for oid, o in objects.items()}
+        names = {}
+        for oid, o in objects.items():
+            entry = _l(_d(o).get("data"))
+            first = _d(entry[0]) if entry else {}
+            nm = first.get("name")
+            names[oid] = nm if isinstance(nm, str) else ""
 
-        items, excluded = [], 0
+        items, excluded, skipped = [], 0, []
         for oid, obj in objects.items():
-            data = obj.get("data") or []
-            if not data:
+            data = _l(_d(obj).get("data"))
+            if not data or not isinstance(data[0], dict):
+                skipped.append((oid, type(data[0]).__name__ if data else "empty"))
                 continue
-            body, category = _render(oid, data[0], relations, names)
-            name = data[0].get("name", "")
+            try:
+                body, category = _render(oid, data[0], relations, names)
+            except Exception as e:
+                # One malformed object must not abort a 128,000-object harvest.
+                skipped.append((oid, f"{type(e).__name__}"))
+                continue
+            name = names.get(oid, "")
             if _is_structural(category, name):
                 excluded += 1
                 continue
             items.append({"id": oid, "name": name,
                           "category": category, "body": body})
 
+        if skipped:
+            print(f"  skipped {len(skipped)} malformed objects "
+                  f"(ids and reasons only):", flush=True)
+            for oid, why in skipped[:10]:
+                print(f"    {oid}: {why}", flush=True)
+            if len(skipped) > 10:
+                print(f"    ... and {len(skipped) - 10} more", flush=True)
+
+        # 128,000 objects at the 40-per-file default would produce thousands
+        # of files, which is unusable in Drive and slow to write. Revisit once
+        # the category breakdown is known.
         written = write_bundles(
-            outdir, self.id, self.name, items,
+            outdir, self.id, self.name, items, per_file=250,
             extra_index_lines=[
                 f"Landscape version: `{BASE.rsplit('/', 1)[-1]}`.",
                 f"Merged from {len(shards)} data shards "
@@ -343,6 +389,7 @@ class Source(BaseSource):
                 f"Objects with relationships: {len(relations)}.",
                 f"Structural graph objects excluded: {excluded} "
                 f"(their edges appear inline under Relationships).",
+                f"Malformed objects skipped: {len(skipped)}.",
             ])
 
         return HarvestResult(
@@ -352,7 +399,8 @@ class Source(BaseSource):
             files_written=written["files_written"],
             notes=[f"{len(shards)} shards merged into {len(objects)} objects",
                    f"{len(relations)} objects carry relationships",
-                   f"{excluded} structural relation objects excluded"]
+                   f"{excluded} structural relation objects excluded",
+                   f"{len(skipped)} malformed objects skipped"]
                   + shard_notes,
         )
 
@@ -434,6 +482,15 @@ class Source(BaseSource):
             f"{body.count('__is_translate')} found", stage=Stage.RENDER,
             hint="Internal BIAN placeholder keys reached the output — the "
                  "property-table title filter needs updating."))
+        # Skipping malformed objects keeps a huge harvest alive, but a large
+        # number would mean the payload shape has genuinely moved on.
+        out.append(Check(
+            "malformed objects are rare",
+            True, "see 'malformed objects skipped' in the harvest notes",
+            warn=True, stage=Stage.EXTRACT,
+            hint="If that count is more than a fraction of a percent, the "
+                 "upstream structure has changed and the coercions in _d()/_l() "
+                 "are papering over a real problem."))
         out.append(Check(
             "no structural relation objects emitted",
             not any(_is_structural(m.get("category", ""), m.get("name", ""))
