@@ -128,12 +128,35 @@ def _download(url: str) -> str:
         return r.read().decode("utf-8", errors="replace")
 
 
+def _parse_js_assignments(text: str) -> dict:
+    """Extract every `var name = <json>;` assignment in a file.
+
+    Not one variable per file: all_objects_on_views.js defines several.
+    raw_decode consumes a single JSON value and reports where it ended, so
+    the scan resumes from there rather than failing on trailing content.
+    """
+    out, dec, pos = {}, json.JSONDecoder(), 0
+    pattern = re.compile(r"var\s+(\w+)\s*=\s*")
+    while True:
+        m = pattern.search(text, pos)
+        if not m:
+            break
+        try:
+            value, end = dec.raw_decode(text, m.end())
+        except ValueError:
+            pos = m.end()
+            continue
+        out[m.group(1)] = value
+        pos = end
+    if not out:
+        raise ValueError("unexpected file format — no parseable var assignment")
+    return out
+
+
 def _parse_js_assignment(text: str):
-    """`var name = <json>;` -> Python object."""
-    m = re.match(r"\s*var\s+\w+\s*=\s*", text)
-    if not m:
-        raise ValueError("unexpected file format — no var assignment")
-    return json.loads(re.sub(r";\s*$", "", text[m.end():].strip()))
+    """The first assignment in a file, which is the payload in every data
+    file we consume."""
+    return next(iter(_parse_js_assignments(text).values()))
 
 
 def _shard_numbers(mapping: dict) -> list[int]:
