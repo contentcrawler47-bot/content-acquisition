@@ -1,0 +1,107 @@
+name: Publish sample to Drive
+
+# Proves the Google Drive path end to end with a small payload — about 26
+# diagrams rather than the whole landscape. If this works, nothing remains
+# but volume.
+#
+# Publishes to content/bian-savings-sample/, a sample-specific folder, so it
+# cannot disturb a real source. core/publish.py scopes every sync to one
+# subfolder and refuses to sync a missing, empty or manifest-less directory,
+# so a failed build cannot wipe anything.
+#
+# Run order when setting Drive up for the first time:
+#   1. Check publishing target (Google Drive)   — credentials reachable?
+#   2. this workflow with publish: false        — does the bundle build?
+#   3. this workflow with dry_run: true         — what would sync?
+#   4. this workflow for real
+#
+# Requires GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET and GDRIVE_TOKEN. See
+# SETUP.md for how to obtain them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Sync to Drive (off = build and inspect only)
+        type: boolean
+        default: false
+      dry_run:
+        description: With publish on, show what would sync without writing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-sample
+  cancel-in-progress: false
+
+env:
+  RCLONE_VERSION: "1.71.1"
+
+jobs:
+  sample:
+    name: Build and publish the Savings Account sample
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # STAGE 1 — build. No Drive credentials are referenced, so a failure
+      # here is a content problem, never a publishing one.
+      - name: Build the sample bundle
+        id: build
+        run: python3 tools/publish_sample.py --build
+
+      - name: Show what was built
+        run: |
+          echo "Files in the bundle:"
+          ls -la out/bian-savings-sample/
+          echo
+          echo "──────── index.md ────────"
+          cat out/bian-savings-sample/index.md
+
+      - name: Install rclone (pinned, checksum verified)
+        if: inputs.publish
+        run: |
+          set -euo pipefail
+          base="https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}"
+          pkg="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          curl -fsSLO "${base}/${pkg}"
+          curl -fsSLO "${base}/SHA256SUMS"
+          grep " ${pkg}\$" SHA256SUMS | sha256sum -c -
+          unzip -q "${pkg}"
+          sudo install -m 755 "rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          rclone version | head -1
+
+      # STAGE 2 — publish. The only step holding Drive credentials, so a
+      # failure from here on is unambiguously a publishing problem.
+      - name: Publish to Drive
+        id: publish
+        if: inputs.publish
+        env:
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: |
+          python3 tools/publish_sample.py --publish \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          if [ "${{ steps.build.outcome }}" = "failure" ]; then
+            echo "::error title=Build failed::The bundle was not produced. Drive was never contacted."
+          else
+            echo "::error title=Publish failed::The bundle built correctly; the Drive sync failed."
+            echo "  Missing credentials  -> add the three GDRIVE_* secrets"
+            echo "  Rejected credentials -> the OAuth token expired or was revoked"
+            echo "  Folder not visible   -> with drive.file scope rclone only sees"
+            echo "                          folders it created; let it create them"
+            echo "  Run 'Check publishing target (Google Drive)' to test in isolation."
+          fi

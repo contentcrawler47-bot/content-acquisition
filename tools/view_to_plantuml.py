@@ -441,10 +441,12 @@ def find_savings_views():
             view_ids.append(str(v))
     view_ids = sorted(set(view_ids))
     print(f"  appears on {len(view_ids)} views", flush=True)
+    named = {}
     for v in view_ids:
-        nm = (views.get(v) or {}).get("name", "?")
-        print(f"    view {v}: {nm}", flush=True)
-    return view_ids
+        nm = (views.get(v) or {}).get("name", "")
+        named[v] = nm
+        print(f"    view {v}: {nm or '?'}", flush=True)
+    return named
 
 
 def main():
@@ -459,8 +461,14 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     sources = list(args.sources)
+    # insiteViews carries every diagram's name. Class diagrams have no
+    # UML_Interaction to read a title from, so without this they fall back to
+    # "View 36488" — which then becomes the published filename.
+    known_titles = {}
     if args.savings:
-        sources += [f"{BASE}/views/view_{v}.html" for v in find_savings_views()]
+        named = find_savings_views()
+        known_titles = {v: n for v, n in named.items() if n}
+        sources += [f"{BASE}/views/view_{v}.html" for v in named]
     if not sources:
         ap.error("give a file/URL, or --savings")
 
@@ -472,6 +480,10 @@ def main():
         except Exception as e:
             print(f"  skipped: {type(e).__name__}: {e}", flush=True)
             continue
+        vid = d.get("view_id") or ""
+        if known_titles.get(vid) and d["title"] in ("", "diagram",
+                                                    f"View {vid}"):
+            d["title"] = known_titles[vid]
         print(summarise(d), flush=True)
         if d["messages"]:
             body, kind = to_plantuml(d, src), "sequence"
