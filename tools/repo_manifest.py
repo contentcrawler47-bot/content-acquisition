@@ -37,7 +37,11 @@ MANIFEST = REPO / "MANIFEST.sha256"
 # content — which would break the base-digest check it exists to serve.
 SKIP_DIRS = {".git", "__pycache__", "out", ".venv", ".runs", ".idea",
              ".vscode", ".changeset_tmp"}
-SKIP_SUFFIX = {".pyc", ".pyo"}
+# Changeset zips are uploaded into changesets/ to be applied, then deleted.
+# They are transient payloads, not repo content — and counting them would make
+# the digest change the moment one is uploaded, which would defeat the
+# base-digest check that exists to be evaluated with the zip present.
+SKIP_SUFFIX = {".pyc", ".pyo", ".zip"}
 # NEXT_STEPS.md is instructions handed over with a revision, not repo content.
 # Excluded from both sides of the comparison, so committing it or not makes no
 # difference to the result.
