@@ -1,0 +1,275 @@
+name: Landscape — BIAN v14 (full, chunked)
+
+# The COMPLETE v14 landscape: the semantic model plus every sequence and class
+# diagram. Replaces the old "Source — BIAN", which acquired the model only.
+#
+# Shape of the run:
+#
+#   plan      fetch the 47 data shards ONCE, classify all ~2,285 views from the
+#             model, and write a work plan splitting the ~1,231 convertible
+#             ones into chunks. Nothing downstream re-reads the shards; the
+#             model travels between jobs as an artifact.
+#   chunk N   fetch one slice of view pages and convert them. Runs one chunk at
+#             a time (max-parallel: 1) and stops the whole matrix at the first
+#             chunk that cannot verify itself (fail-fast), so a broken run
+#             makes no further requests of bian.org.
+#   assemble  merge every part, verify the landscape as a whole, then publish.
+#             Publishing happens exactly once, from a bundle that verified.
+#
+# Being a good guest is a design constraint here, not an afterthought:
+#   - one runner, single-threaded, never parallel across chunks
+#   - a floor of `delay` seconds between requests (default 1.0)
+#   - keep-alive and gzip, so ~1,231 pages cost ~1,231 requests and few
+#     handshakes
+#   - a page cache: a view that has not changed answers 304 with no body, so
+#     the weekly refresh transfers almost nothing
+#   - robots.txt is read before anything else and honoured
+#   - 429/5xx back off, Retry-After is obeyed, and eight consecutive failures
+#     stop the run rather than pushing on
+#
+# For a new landscape version, copy this file, change SOURCE_ID and the
+# concurrency group, and stagger the cron — one Drive account serves them all.
+#
+# Logs report counts and pass/fail only, never acquired text: Actions logs on a
+# public repo are world-readable.
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"        # 03:00 UTC Mon = 15:00 NZST / 16:00 NZDT
+  workflow_dispatch:
+    inputs:
+      chunks:
+        description: Number of chunks to split the view pages into
+        type: string
+        default: "10"
+      delay:
+        description: Minimum seconds between requests to bian.org
+        type: string
+        default: "1.0"
+      publish:
+        description: Sync to Google Drive once the landscape verifies
+        type: boolean
+        default: true
+      plan_only:
+        description: Plan and report, fetch no view pages at all
+        type: boolean
+        default: false
+      limit:
+        description: Plan only the first N views (0 = all; for a trial run)
+        type: string
+        default: "0"
+
+permissions:
+  contents: write              # only for the keep-alive timestamp commit
+
+concurrency:
+  group: landscape-bian-v14    # per source: never blocks another landscape
+  cancel-in-progress: false
+
+env:
+  # NOT named RCLONE_VERSION: rclone maps RCLONE_<FLAG> env vars onto its own
+  # flags, so RCLONE_VERSION is read as --version (a boolean) and every rclone
+  # invocation dies with a parse error.
+  RC_VERSION: "1.71.1"
+  SOURCE_ID: bian-v14
+  PARTS: out/_parts/bian-v14
+  CACHE: out/_parts/bian-v14/cache.json
+
+jobs:
+  # ---------------------------------------------------------------- plan
+  plan:
+    name: Read the model and plan the chunks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      indexes: ${{ steps.plan.outputs.indexes }}
+      views: ${{ steps.plan.outputs.views }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # No Drive credentials are referenced by this job, so a failure here is
+      # unambiguously a source problem.
+      - name: Plan
+        id: plan
+        run: |
+          set -euo pipefail
+          python3 tools/landscape.py plan "$SOURCE_ID" \
+            --chunks "${{ inputs.chunks || '10' }}" \
+            --delay "${{ inputs.delay || '1.0' }}" \
+            --limit "${{ inputs.limit || '0' }}"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          plan = json.load(open(f"{os.environ['PARTS']}/plan.json"))
+          print("indexes=" + json.dumps(
+              [c["index"] for c in plan["chunks"] if c["views"]]))
+          print(f"views={plan['view_count']}")
+          PY
+
+      - name: Planning failed
+        if: failure()
+        run: |
+          echo "::error title=PLAN failed::Could not read the v14 model, or the view classification does not match the landscape. Drive was never contacted."
+          echo "No view pages were requested. Read the MODEL and VIEW CLASSIFICATION blocks above."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parts-plan
+          path: ${{ env.PARTS }}
+          retention-days: 3
+
+  # --------------------------------------------------------------- chunks
+  chunk:
+    name: Chunk ${{ matrix.index }}
+    needs: plan
+    if: ${{ !inputs.plan_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # One at a time, and stop everything at the first chunk that fails its
+      # own verification. That is the "verify before moving on" requirement:
+      # chunk N+1 never starts unless chunk N proved it harvested what the
+      # plan asked for.
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        index: ${{ fromJSON(needs.plan.outputs.indexes) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: parts-plan
+          path: ${{ env.PARTS }}
+
+      # Pages seen on a previous run: an unchanged view then answers 304 with
+      # no body. A miss is harmless — everything is simply fetched in full.
+      - name: Restore the page cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: landscape-bian-v14-pages-${{ github.run_id }}
+          restore-keys: landscape-bian-v14-pages-
+
+      - name: Harvest chunk ${{ matrix.index }}
+        run: |
+          python3 tools/landscape.py chunk "$SOURCE_ID" \
+            --index "${{ matrix.index }}" \
+            --delay "${{ inputs.delay || '1.0' }}" \
+            --cache "$CACHE"
+
+      - name: Chunk failed
+        if: failure()
+        run: |
+          echo "::error title=CHUNK ${{ matrix.index }} failed::This chunk did not harvest the views the plan assigned it. Later chunks were cancelled and nothing will be published."
+          echo "Use 'Re-run failed jobs' to retry this chunk alone — the plan artifact is reused, so the shards are not read again."
+
+      - name: Name the chunk artifact
+        if: always()
+        run: printf 'PART=%02d\n' "${{ matrix.index }}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parts-chunk-${{ env.PART }}
+          path: ${{ env.PARTS }}/chunk-${{ env.PART }}
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # ------------------------------------------------------------- assemble
+  assemble:
+    name: Verify the landscape and publish
+    needs: [plan, chunk]
+    if: ${{ !inputs.plan_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      # NOT merge-multiple: every chunk artifact holds a file called
+      # items.json, so merging them into one directory would have each chunk
+      # overwrite the last. They come down as siblings and are put back into
+      # the layout the pipeline wrote.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: parts-*
+          path: ${{ env.PARTS }}/incoming
+
+      - name: Rebuild the parts tree
+        run: |
+          set -euo pipefail
+          mv "$PARTS"/incoming/parts-plan/* "$PARTS"/
+          for d in "$PARTS"/incoming/parts-chunk-*; do
+            [ -d "$d" ] || continue
+            mv "$d" "$PARTS/chunk-${d##*parts-chunk-}"
+          done
+          rm -rf "$PARTS/incoming"
+          ls -la "$PARTS"
+
+      # STAGE 1 — is the landscape whole? Uses no Drive credentials.
+      - name: Assemble and verify
+        id: assemble
+        run: python3 tools/landscape.py assemble "$SOURCE_ID"
+
+      - name: Assembly failed
+        if: failure() && steps.assemble.outcome == 'failure'
+        run: |
+          echo "::error title=ASSEMBLY failed::Chunks are missing, disagree about the plan, or the landscape came out materially short. Nothing was published."
+          echo "Publishing a partial landscape would delete the difference from Drive, so the bundle was not written."
+
+      - name: Install rclone (pinned, checksum verified)
+        if: github.event_name == 'schedule' || inputs.publish
+        run: |
+          set -euo pipefail
+          base="https://github.com/rclone/rclone/releases/download/v${RC_VERSION}"
+          pkg="rclone-v${RC_VERSION}-linux-amd64.zip"
+          curl -fsSLO "${base}/${pkg}"
+          curl -fsSLO "${base}/SHA256SUMS"
+          grep " ${pkg}\$" SHA256SUMS | sha256sum -c -
+          unzip -q "${pkg}"
+          sudo install -m 755 "rclone-v${RC_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          rm -rf "${pkg}" SHA256SUMS "rclone-v${RC_VERSION}-linux-amd64"
+
+      # STAGE 2 — publishing. Only reached once the landscape verified, so a
+      # failure from here on is unambiguously a Drive problem. Scoped to
+      # content/bian-v14, so no other version's content can be touched.
+      - name: Publish to Drive
+        id: publish
+        if: github.event_name == 'schedule' || inputs.publish
+        env:
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python3 tools/landscape.py publish "$SOURCE_ID"
+
+      - name: Publishing failed
+        if: failure() && steps.assemble.outcome == 'success'
+        run: |
+          echo "::error title=PUBLISHING failed::The landscape was harvested and verified, but the Drive sync failed."
+          echo "This is not a source problem. Run 'Check publishing target (Google Drive)'."
+          echo "Common causes: expired GDRIVE_TOKEN, revoked OAuth grant, Drive quota."
+
+      # Saved last, so a run that failed cannot poison the cache with a
+      # half-harvested landscape.
+      - name: Save the page cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: landscape-bian-v14-pages-${{ github.run_id }}
+
+      - name: Keep the schedule alive
+        if: github.event_name == 'schedule'
+        run: |
+          mkdir -p .runs
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > ".runs/$SOURCE_ID"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ".runs/$SOURCE_ID"
+          git commit -m "$SOURCE_ID run $(date -u +%Y-%m-%d)" || exit 0
+          git pull --rebase --autostash && git push

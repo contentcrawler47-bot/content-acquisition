@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""
+The BIAN Service Landscape data model, independent of any one version.
+
+The landscape browser is a Backbone.js client that loads its dataset from
+static JavaScript files — no API, no login, no rendering step:
+
+    data/all_objects_data_mapping.js -> var objectDataMapping = {id: shard}
+    data/all_objects_data_N.js       -> var objectData        = {id: {...}}
+    data/all_objects_relations.js    -> var objectRelations   = {id: [{via,to}]}
+    data/all_objects_on_views.js     -> var objectsOnViews    = {id: [viewIds]}
+                                        var insiteViews       = {viewId: {...}}
+
+The model is SHARDED across numbered data files capped around 5,000 objects
+each. objectDataMapping says which shard holds each object, so the set of shard
+numbers is simply set(mapping.values()). Reading only one shard — as this
+source originally did — yields about 5% of the landscape.
+
+Everything here is version-agnostic: the base URL is passed in, so v14 and v13
+use identical code and differ only in their pinned URL and thresholds.
+
+Credentials: none. The files are served unauthenticated.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+
+from core.render import clean_html
+
+#: Safety net if the mapping cannot be parsed. Shards are 1-indexed; 0 is 404.
+#: 47 shards existed at v14.0, so the fallback allows generous headroom.
+FALLBACK_SHARDS = range(1, 81)
+MAX_SHARDS = 200
+
+SKIP_RELATION_VERBS = {"", "<unknown role>"}
+
+# The full landscape is 128,000 objects, but only about a tenth is BIAN
+# semantic content. The rest is UML and ArchiMate modelling furniture:
+# Attribute (14,983), Execution specification (7,248), Enumeration literal
+# (5,171), Message (5,149), Line (3,922), Graphical shape (3,313) and so on,
+# across 140+ categories.
+#
+# An allowlist is the only maintainable approach at that scale — a new junk
+# category upstream is then ignored by default rather than silently bloating
+# the output.
+INCLUDE_CATEGORIES = {
+    # Core service model
+    "ServiceDomain", "Service Domain", "ServiceOperation", "ServiceOperationType",
+    "ServiceGroup", "SDServiceGroup", "BusinessService", "Business service",
+    # Information model
+    "ControlRecord", "AssetType", "AnalyticsObject", "Business object",
+    "BehaviorQualifier", "BehaviorQualifierType", "ReferenceInformation",
+    "BIAN Data Type", "BIAN DataType",
+    # Structure and classification
+    "BusinessArea", "BusinessDomain", "BusinessConcept", "FunctionalPattern",
+    "Capability", "Grouping", "GenericArtifact", "ActionTerm",
+    "Business Scenario",
+}
+
+# ArchiMate models relationships as first-class objects. They carry no
+# documentation of their own and the edges they represent are already rendered
+# inline on each real object. Kept as a second line of defence.
+EXCLUDE_CATEGORIES = {
+    "Flow relation", "Triggering relation", "Realization relation",
+    "Serving relation", "Association relation", "Composition relation",
+    "Aggregation relation", "Assignment relation", "Access relation",
+    "Specialization relation", "Influence relation", "Junction",
+    "Lifeline",
+}
+
+# Categories of the *diagram* objects, used to classify view pages without
+# fetching them. See plan.py.
+SEQUENCE_MEMBER_CATEGORIES = {
+    "Message", "Execution specification", "Interaction", "Lifeline",
+    "Interaction operand", "Fragment", "Combined fragment",
+}
+CLASS_MEMBER_CATEGORIES = {
+    "Class", "Attribute", "Generalization", "Enumeration",
+    "Enumeration literal", "Operation", "Association",
+}
+ARCHIMATE_MEMBER_CATEGORIES = {
+    "Business function", "Capability", "Flow relation", "Triggering relation",
+    "Realization relation", "Serving relation", "Grouping", "Work package",
+}
+
+
+def data_url(base: str, name: str) -> str:
+    return f"{base.rstrip('/')}/data/{name}"
+
+
+def shard_url(base: str, n: int) -> str:
+    return data_url(base, f"all_objects_data_{n}.js")
+
+
+def view_url(base: str, view_id) -> str:
+    return f"{base.rstrip('/')}/views/view_{view_id}.html"
+
+
+def object_url(base: str, view: int, oid) -> str:
+    return f"{base.rstrip('/')}/object_{view}.html?object={oid}"
+
+
+# --- parsing ---------------------------------------------------------------
+
+def parse_js_assignments(text: str) -> dict:
+    """Extract every `var name = <json>;` assignment in a file.
+
+    Not one variable per file: all_objects_on_views.js defines several.
+    raw_decode consumes a single JSON value and reports where it ended, so the
+    scan resumes from there rather than failing on trailing content.
+    """
+    out, dec, pos = {}, json.JSONDecoder(), 0
+    pattern = re.compile(r"var\s+(\w+)\s*=\s*")
+    while True:
+        m = pattern.search(text, pos)
+        if not m:
+            break
+        try:
+            value, end = dec.raw_decode(text, m.end())
+        except ValueError:
+            pos = m.end()
+            continue
+        out[m.group(1)] = value
+        pos = end
+    if not out:
+        raise ValueError("unexpected file format — no parseable var assignment")
+    return out
+
+
+def parse_js_assignment(text: str):
+    """The first assignment in a file, which is the payload in every data file
+    consumed as a single variable."""
+    return next(iter(parse_js_assignments(text).values()))
+
+
+def shard_numbers(mapping: dict) -> list[int]:
+    """Shard indices to fetch, taken from the mapping's values.
+
+    The mapping is authoritative: every object id points at the shard holding
+    it. Falls back to a probe range if the values look implausible.
+    """
+    try:
+        nums = sorted({int(v) for v in mapping.values()})
+    except Exception:
+        nums = []
+    if not nums or max(nums) > MAX_SHARDS:
+        return list(FALLBACK_SHARDS)
+    # Shards are contiguous; include any gap the mapping happens not to cite.
+    return list(range(min(nums), max(nums) + 1))
+
+
+# Across 47 shards the payload is not uniformly shaped: fields that are dicts
+# for most objects are occasionally bare strings. These coercions keep a single
+# oddly-shaped object from aborting a 128,000-object harvest.
+
+def _d(x) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _l(x) -> list:
+    return x if isinstance(x, list) else []
+
+
+def _categories(entry) -> list:
+    return [c for c in _l(_d(entry).get("categories")) if isinstance(c, dict)]
+
+
+def _stereotypes(entry) -> list[str]:
+    for cat in _categories(entry):
+        if cat.get("type") == "table":
+            st = _d(_d(_d(cat.get("content")).get("Stereotypes")).get("stereotype"))
+            # A blank stereotype value must not become a blank category:
+            # the object's UML type is the right answer in that case.
+            return [v for v in _l(st.get("value"))
+                    if isinstance(v, str) and v.strip()]
+    return []
+
+
+def _properties(entry) -> dict:
+    for cat in _categories(entry):
+        if cat.get("type") == "table":
+            return _d(cat.get("content"))
+    return {}
+
+
+def _documentation(entry) -> dict:
+    out = {}
+    for cat in _categories(entry):
+        if cat.get("type") != "documentation":
+            continue
+        content = cat.get("content")
+        value = content if isinstance(content, str) else _d(content).get("value", "")
+        text = clean_html(value if isinstance(value, str) else "")
+        if text:
+            out[cat.get("title") or "documentation"] = text
+    return out
+
+
+def _flatten(value):
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        kind = value.get("type")
+        if kind == "link":
+            v = _d(value.get("value"))
+            return f"{v.get('title', '')} — {v.get('location', '')}".strip(" —")
+        if kind == "object":
+            return _d(value.get("value")).get("name", "")
+        if kind == "collection":
+            return [x for x in (_flatten(i) for i in _l(value.get("value"))) if x]
+    return ""
+
+
+def is_structural(category: str, name: str) -> bool:
+    """Structural graph artefacts, not content."""
+    return (category in EXCLUDE_CATEGORIES
+            or category.endswith(" relation")
+            or (name or "").endswith(" relation"))
+
+
+def is_wanted(category: str, name: str) -> bool:
+    """Keep only BIAN semantic content."""
+    return category in INCLUDE_CATEGORIES and not is_structural(category, name)
+
+
+# --- the model -------------------------------------------------------------
+
+class Landscape:
+    """One version of the landscape, loaded from its static data files.
+
+    Holds the merged object model, the relation graph and the view membership
+    map. Deliberately separate from anything that writes output, so the same
+    model serves the semantic harvest, the view classifier and the diagram
+    chunks without being fetched more than once.
+    """
+
+    def __init__(self, base: str, object_view: int = 16):
+        self.base = base.rstrip("/")
+        self.object_view = object_view
+        self.objects: dict = {}
+        self.relations: dict = {}
+        self.on_views: dict = {}
+        self.insite_views: dict = {}
+        self.names: dict = {}
+        self.categories: dict = {}
+        self.shards: list[int] = []
+        self.notes: list[str] = []
+
+    # -- loading ------------------------------------------------------
+
+    def load(self, fetcher) -> "Landscape":
+        # conditional=False throughout: the model has to be materialised
+        # every run, so a 304 here would be an empty body and nothing to parse.
+        mapping_text = fetcher.get(
+            data_url(self.base, "all_objects_data_mapping.js"),
+            conditional=False).text
+        try:
+            mapping = parse_js_assignment(mapping_text)
+        except Exception:
+            mapping = {}
+        self.shards = shard_numbers(mapping)
+        print(f"  {len(self.shards)} shards to fetch: "
+              f"{self.shards[0]}-{self.shards[-1]}", flush=True)
+
+        missing = []
+        for n in self.shards:
+            resp = fetcher.get(shard_url(self.base, n),
+                               conditional=False)
+            if resp.status == 404:
+                missing.append(n)
+                continue
+            try:
+                data = parse_js_assignment(resp.text)
+            except Exception as e:
+                self.notes.append(f"shard {n} unparseable ({type(e).__name__})")
+                continue
+            before = len(self.objects)
+            for oid, obj in data.items():
+                self.objects.setdefault(oid, obj)
+            print(f"  shard {n:<3} {len(resp.text) / 1024:>8.0f} KB  "
+                  f"{len(data):>6} objects  "
+                  f"(+{len(self.objects) - before} new)", flush=True)
+        if missing:
+            self.notes.append(f"shards absent: {', '.join(map(str, missing))}")
+
+        try:
+            self.relations = parse_js_assignment(
+                fetcher.get(data_url(self.base, "all_objects_relations.js"),
+                            conditional=False).text)
+        except Exception:
+            self.relations = {}
+
+        try:
+            variables = parse_js_assignments(
+                fetcher.get(data_url(self.base, "all_objects_on_views.js"),
+                            conditional=False).text)
+            self.on_views = variables.get("objectsOnViews", {})
+            self.insite_views = variables.get("insiteViews", {})
+        except Exception:
+            self.on_views, self.insite_views = {}, {}
+
+        self._index()
+        print(f"  merged {len(self.objects)} unique objects from "
+              f"{len(self.shards)} shards; {len(self.relations)} carry "
+              f"relations; {len(self.insite_views)} views known", flush=True)
+        return self
+
+    def _index(self):
+        """Name and category for every object, used everywhere downstream."""
+        for oid, obj in self.objects.items():
+            entry = _l(_d(obj).get("data"))
+            first = _d(entry[0]) if entry else {}
+            name = first.get("name")
+            self.names[oid] = name if isinstance(name, str) else ""
+            sts = _stereotypes(first)
+            otype = first.get("type") or ""
+            if not isinstance(otype, str):
+                otype = str(otype)
+            self.categories[oid] = sts[0] if sts else (otype or "Other")
+
+    # -- rendering ----------------------------------------------------
+
+    def _relations_block(self, oid) -> list[str]:
+        rels = [r for r in _l(self.relations.get(str(oid))) if isinstance(r, dict)]
+        if not rels:
+            return []
+        lines = ["### Relationships"]
+        for rel in sorted(rels, key=lambda r: r.get("via") or ""):
+            via = (rel.get("via") or "").strip()
+            if via in SKIP_RELATION_VERBS:
+                continue
+            targets = sorted(
+                f"{self.names[str(t)]} ({t})" for t in _l(rel.get("to"))
+                if isinstance(t, (str, int)) and self.names.get(str(t))
+                and not (self.names[str(t)] or "").endswith(" relation"))
+            if targets:
+                lines.append(f"- **{via}:** " + "; ".join(targets))
+        return lines + [""] if len(lines) > 1 else []
+
+    def render(self, oid, entry) -> tuple[str, str]:
+        entry = _d(entry)
+        sts = _stereotypes(entry)
+        otype = entry.get("type") or ""
+        if not isinstance(otype, str):
+            otype = str(otype)
+        lines = [
+            f"## {entry.get('name') or f'Object {oid}'}", "",
+            f"- **Object id:** {oid}",
+            f"- **Type:** {otype}" + (f" ({', '.join(sts)})" if sts else ""),
+            f"- **Source:** {object_url(self.base, self.object_view, oid)}", "",
+        ]
+
+        for title, text in _documentation(entry).items():
+            lines += [f"### {'Description' if title == 'documentation' else title}",
+                      text, ""]
+
+        for group, fields in _properties(entry).items():
+            if group == "Stereotypes" or not isinstance(fields, dict):
+                continue
+            if not isinstance(group, str):
+                group = str(group)
+            rows = []
+            for key, raw in fields.items():
+                val = _flatten(raw)
+                if isinstance(val, list):
+                    if val:
+                        rows.append(f"- **{key}:** ({len(val)})")
+                        rows += [f"  - {v}" for v in val]
+                elif val:
+                    rows.append(f"- **{key}:** "
+                                + " / ".join(v.strip()
+                                             for v in val.split("\n") if v.strip()))
+            if rows:
+                lines += [f"### {group}", *rows, ""]
+
+        lines += self._relations_block(oid)
+        lines += ["---", ""]
+        return "\n".join(lines), (sts[0] if sts else otype or "Other")
+
+    def semantic_items(self) -> tuple[list[dict], dict, list]:
+        """Every object the allowlist keeps, rendered to markdown.
+
+        Returns (items, dropped_by_category, skipped) so the caller can report
+        what was filtered and what was malformed without this deciding how any
+        of it should be printed.
+        """
+        items, skipped, dropped = [], [], {}
+        for oid, obj in self.objects.items():
+            data = _l(_d(obj).get("data"))
+            if not data or not isinstance(data[0], dict):
+                skipped.append((oid, type(data[0]).__name__ if data else "empty"))
+                continue
+            try:
+                body, category = self.render(oid, data[0])
+            except Exception as e:
+                # One malformed object must not abort a 128,000-object harvest.
+                skipped.append((oid, f"{type(e).__name__}"))
+                continue
+            name = self.names.get(oid, "")
+            if not is_wanted(category, name):
+                dropped[category] = dropped.get(category, 0) + 1
+                continue
+            items.append({"id": oid, "name": name,
+                          "category": category, "body": body})
+        return items, dropped, skipped
+
+    # -- views --------------------------------------------------------
+
+    def views_to_members(self) -> dict[str, list[str]]:
+        """Invert objectsOnViews: {viewId: [objectId, ...]}.
+
+        This is what makes it possible to classify a diagram — and to size it —
+        without fetching the page first.
+        """
+        out: dict[str, list[str]] = {}
+        for oid, views in self.on_views.items():
+            for vid in _l(views):
+                out.setdefault(str(vid), []).append(str(oid))
+        return out
+
+    def view_name(self, vid) -> str:
+        return (_d(self.insite_views.get(str(vid))).get("name") or "").strip()

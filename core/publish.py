@@ -109,6 +109,20 @@ def publish(source_id: str, outdir: Path, dry_run: bool = False) -> str:
             f"{outdir}/manifest.json missing — refusing to publish an "
             f"incomplete harvest")
 
+    # A source that harvests in stages can produce a usable-looking but partial
+    # bundle — the semantic half without the diagrams, say. `rclone sync`
+    # deletes whatever the local copy lacks, so publishing that would quietly
+    # remove the missing half from Drive. The bundle says whether it is whole.
+    try:
+        manifest = json.loads((outdir / "manifest.json").read_text())
+    except Exception as e:
+        raise PublishError(f"{outdir}/manifest.json is unreadable: {e}")
+    if manifest.get("complete") is False:
+        raise PublishError(
+            f"{outdir} is marked incomplete (manifest 'complete': false) — "
+            f"refusing to sync. Publishing a partial harvest over a full one "
+            f"deletes the difference. Run the full pipeline for this source.")
+
     dest = destination(source_id)
     args = ["sync", str(outdir), dest, "--create-empty-src-dirs=false",
             "--stats-log-level", "NOTICE"]

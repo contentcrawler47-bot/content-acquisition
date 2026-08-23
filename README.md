@@ -14,11 +14,46 @@ core/
   cli.py                   source discovery and commands
 sources/
   _template/               copy this to add a source
-  bian/                    BIAN Service Landscape
+  bian-v14/                BIAN Service Landscape v14 — pinned URL, thresholds
+bianlib/                   BIAN extraction, shared across landscape versions
+  fetch.py                 paced, backing-off, cache-aware HTTP
+  landscape.py             the data model: shards, relations, views
+  views.py                 view-page SVG geometry -> PlantUML
+  plan.py                  view classification, chunking, verification
+  pipeline.py              plan -> chunk -> assemble
+tools/
+  landscape.py             the chunked full-landscape harvest
 .github/workflows/
-  source-bian.yml          one workflow per source
+  landscape-bian-v14.yml   full landscape, in verified chunks
+  validate-bian.yml        can we still extract? (cheap, weekly)
   reindex.yml              rebuilds the top-level Drive index
 ```
+
+## Harvesting a whole landscape
+
+A BIAN landscape is two very different jobs. The semantic model is 47 files and
+about two minutes. The diagrams are ~1,231 view pages, and asking someone
+else's web server for that in one burst is not reasonable.
+
+```
+python3 tools/landscape.py plan     bian-v14 --chunks 10
+python3 tools/landscape.py chunk    bian-v14 --index 1
+python3 tools/landscape.py assemble bian-v14
+```
+
+The model is read once and passed downstream, so the shards are never re-read
+per chunk. Each chunk verifies its own accounting before the next begins, and
+nothing is published until the landscape verifies as a whole. Requests are
+paced, gzipped, sent over one connection, and conditional — an unchanged view
+answers 304 with no body, so a weekly refresh transfers almost nothing.
+
+## Multiple versions of one source
+
+`bian-v14` and `bian-v13` are separate sources sharing `bianlib/`. Each has its
+own output directory, its own workflow and its own Drive folder, and
+`rclone sync` is scoped per source — so neither version can see, overwrite or
+delete the other. Adding v13 means copying `sources/bian-v14/` and changing the
+pinned URL and the verified counts.
 
 ## Commands
 
@@ -80,6 +115,10 @@ Python standard library only. No dependencies to install.
 is always scoped to one subfolder. `core/publish.py` additionally refuses to
 sync a missing, empty, or manifest-less output directory — so a failed harvest
 cannot wipe the published copy.
+
+It also refuses a bundle whose manifest says `"complete": false`. A source that
+harvests in stages can produce a real-looking partial bundle; syncing that over
+a full one would silently delete the difference.
 
 ## Adding a source
 

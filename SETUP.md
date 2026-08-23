@@ -29,7 +29,7 @@ The flat BIAN-only repo is superseded. **Delete these:**
 
 | Path | Replaced by |
 |---|---|
-| `harvest.py` / `harvest_bian.py` | `sources/bian/source.py` + `core/` |
+| `harvest.py` / `harvest_bian.py` | `sources/bian-v14/source.py` + `bianlib/` + `core/` |
 | `validate.py` / `validate_bian.py` | `core/checks.py` + `Source.checks()` |
 | `crawl.py`, `object_ids.txt` | (obsolete since the Playwright version) |
 | `.github/workflows/harvest.yml`, `harvest-bian.yml` | `.github/workflows/source-bian.yml` |
@@ -56,8 +56,8 @@ first run create it, then delete the old `BIAN/` folder by hand.
 | `core/checks.py` | Generic validation and the report runner |
 | `core/publish.py` | Per-source-scoped Drive sync |
 | `core/cli.py` | Source discovery and commands |
-| `core/__init__.py`, `sources/__init__.py`, `sources/bian/__init__.py` | Empty package markers — required |
-| `sources/bian/source.py` | BIAN Service Landscape |
+| `core/__init__.py`, `sources/__init__.py`, `sources/bian-v14/__init__.py`, `bianlib/__init__.py` | Empty package markers — required |
+| `sources/bian-v14/source.py` | BIAN Service Landscape v14 — pinned URL and thresholds only |
 | `sources/_template/source.py` | Copy to add a source |
 | `core/diagnostics.py` | Connectivity probing with error classification |
 | `.github/workflows/validate-bian.yml` | **Validate — BIAN**: extraction only, no Drive secrets |
@@ -217,14 +217,14 @@ to read `content/index.md` first, then the relevant source's `index.md`.
 ## Operating notes
 
 - **Version pinning.** Upstream versions live in the source that uses them —
-  for BIAN, `BASE` and `VIEW` at the top of `sources/bian/source.py`. Update
+  for BIAN, `base` and `object_view` in `sources/bian-v14/source.py`. Update
   them, then run validation with publish off.
 - **Structural objects are excluded.** BIAN's model is ArchiMate, which
   represents relationships as first-class objects (Flow relation, Triggering
   relation, and so on). These carry no documentation and their edges already
   render inline under each real object's Relationships section, so they are
   filtered out — about a third of the raw object count. See
-  `EXCLUDE_CATEGORIES` in `sources/bian/source.py`.
+  `EXCLUDE_CATEGORIES` in `bianlib/landscape.py`.
 - **Canaries.** Each source asserts a known item is present with a known name,
   so upstream restructuring fails loudly rather than silently thinning the
   output.

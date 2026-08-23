@@ -1,4 +1,4 @@
-name: Validate — BIAN Service Landscape
+name: Validate — BIAN v14
 
 # EXTRACTION validation only. Answers one question: can we still connect to
 # BIAN and pull the expected content out of it?
@@ -6,6 +6,10 @@ name: Validate — BIAN Service Landscape
 # References NO Google Drive secrets. A red run here therefore always means a
 # SOURCE problem — never a publishing one. Use "Check publishing target" to
 # test the Drive half separately.
+#
+# The SEMANTIC half only — 47 shards, about two minutes. That is what makes it
+# usable as an hourly-cheap early warning. The diagrams are harvested by
+# "Landscape — BIAN v14 (full, chunked)", which is the workflow that publishes.
 #
 # Run this when:
 #   - onboarding or changing this source
@@ -33,11 +37,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: validate-bian
+  group: validate-bian-v14
   cancel-in-progress: true
 
 env:
-  SOURCE_ID: bian
+  SOURCE_ID: bian-v14
 
 jobs:
   validate:
@@ -64,7 +68,7 @@ jobs:
           echo "The failing STAGE tells you where to look:"
           echo "  Connectivity — bian.org unreachable, or blocking this runner"
           echo "  Payload      — reachable but returning the wrong thing (new version?)"
-          echo "  Parse        — format changed; fix sources/bian/source.py"
+          echo "  Parse        — format changed; fix bianlib/landscape.py"
           echo "  Extract      — parsed, but wrong items selected"
           echo "  Render       — a bug in this repo's markdown generation"
           echo ""

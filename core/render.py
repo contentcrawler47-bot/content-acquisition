@@ -54,13 +54,24 @@ def write_bundles(
     source_id: str,
     source_name: str,
     items: list[dict],
-    per_file: int = 40,
+    per_file: int | dict = 40,
+    per_file_default: int = 40,
+    complete: bool = True,
     extra_index_lines: list[str] | None = None,
 ) -> dict:
     """Write grouped markdown, an index and a manifest.
 
     Each item: {"id", "name", "category", "body"} where body is markdown for
     one item, ending with its own separator.
+
+    `per_file` may be a single number or {category: number}, because item sizes
+    are not uniform once a source emits more than one kind of thing: a rendered
+    diagram is two orders of magnitude larger than a property table, and one
+    grouping size cannot suit both.
+
+    `complete=False` marks a partial bundle. `core.publish` refuses to sync
+    one, since `rclone sync` deletes whatever the source lacks — a partial
+    harvest published over a full one silently destroys the difference.
     """
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -83,7 +94,10 @@ def write_bundles(
     for category in sorted(groups, key=lambda k: -len(groups[k])):
         entries = sorted(groups[category], key=lambda i: i.get("name", ""))
         slug = slugify(category)
-        chunks = [entries[i:i + per_file] for i in range(0, len(entries), per_file)]
+        size = (per_file.get(category, per_file_default)
+                if isinstance(per_file, dict) else per_file)
+        size = max(1, int(size))
+        chunks = [entries[i:i + size] for i in range(0, len(entries), size)]
         names = []
         for n, chunk in enumerate(chunks, 1):
             fname = f"{slug}_{n:02d}.md" if len(chunks) > 1 else f"{slug}.md"
@@ -102,6 +116,7 @@ def write_bundles(
         "source": source_id,
         "source_name": source_name,
         "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "complete": bool(complete),
         "count": len(items),
         "categories": {c: len(v) for c, v in groups.items()},
         "items": {
