@@ -43,7 +43,7 @@ CONVERTIBLE = ("sequence", "class")
 #: misfired, and it is better to stop than to harvest a fraction of the model.
 #: See content/_project-context/REFERENCE-DATA.md on Drive.
 EXPECTED = {"sequence": 429, "class": 802}
-TOLERANCE = 0.25          # ±25% before the plan is rejected
+TOLERANCE = 0.05          # a direct reading needs no slack
 
 #: Per-chunk acceptance. A handful of view pages can legitimately fail — a
 #: transient 5xx, a page that is not a diagram at all — but a chunk that has
@@ -61,24 +61,32 @@ def failure_limit(planned: int) -> int:
 
 
 #: The diagram objects' own categories, which is what the model calls them.
-#: A view id appears to BE the id of the diagram object it renders, so this is
-#: a direct reading rather than an inference from what the view contains.
+#: A view id IS the id of the diagram object it renders — confirmed against
+#: v14.0, where this reading returns exactly 429 sequence and 801 class views
+#: against a reference of 429 and 802.
+#:
+#: Only these two convert. Everything else the model names — Total view,
+#: Capability map view, Information structure view, Roadmap view, Business
+#: Model Canvas and a dozen more — is ArchiMate or another notation entirely,
+#: and is classified "other" so it is never requested.
 MODEL_KIND = {
     "Sequence diagram": "sequence",
     "Class diagram": "class",
-    "Total view": "archimate",
-    "Capability map view": "archimate",
-    "Business process diagram": "archimate",
 }
 
 
 def _by_members(landscape: L.Landscape, oids: list[str]) -> str:
-    """Kind inferred from what the view contains.
+    """Kind guessed from what the view contains. DIAGNOSTIC ONLY.
 
-    Scoring rather than first-match: a sequence diagram contains a handful of
-    Class objects too, and vice versa. Used only where the model does not name
-    the diagram itself — it over-counts class views, because several ArchiMate
-    view types are full of objects this cannot tell from UML classes.
+    This was the original classifier and it does not work: it put 1,043 views
+    in the class bucket against a known 802, because several ArchiMate view
+    types are built from objects it cannot distinguish from UML classes. Of
+    the 385 views that are not objects in the model, it calls 265 "class" —
+    all of them wrong, since the model already accounts for every one of the
+    802 real class diagrams.
+
+    It is kept because the comparison is what proves the model reading is
+    sound, and would show it breaking. It decides nothing.
     """
     seq = cls = arch = 0
     for oid in oids:
@@ -96,18 +104,15 @@ def _by_members(landscape: L.Landscape, oids: list[str]) -> str:
 def classify(landscape: L.Landscape) -> tuple[dict, dict, dict]:
     """{viewId: kind}, the member counts, and how each kind was decided.
 
-    Two independent readings, in order of trust:
+    The model is the only authority. Every diagram is itself an object whose
+    category says what it is, so a view named "Class diagram" is one and a
+    view the model does not name at all is not planned — inferring a kind from
+    a view's contents was tried, and every view it added was a view that
+    should not have been fetched.
 
-    1. **The model names the diagram.** Every diagram is itself an object, and
-       its category says what it is — "Class diagram", "Sequence diagram",
-       "Total view", "Capability map view". Where the view id resolves to such
-       an object, that is the answer and there is nothing to infer.
-    2. **What the view contains.** Only for views the model does not name.
-
-    The first reading was added after the second put 1,043 views in the class
-    bucket against a known 802 — it cannot separate a UML class diagram from
-    the several ArchiMate view types built out of similar-looking objects, and
-    240 extra pages is 240 requests of somebody else's server for nothing.
+    Kinds returned: "sequence" and "class" convert; "other" is a diagram the
+    model names in a notation this cannot render; "unnamed" is a view with no
+    diagram object behind it.
     """
     members = landscape.views_to_members()
     all_views = set(members) | {str(v) for v in landscape.insite_views}
@@ -116,10 +121,10 @@ def classify(landscape: L.Landscape) -> tuple[dict, dict, dict]:
     for vid in all_views:
         oids = members.get(vid, [])
         sizes[vid] = len(oids)
-        from_model = MODEL_KIND.get(landscape.categories.get(vid, ""), "")
-        from_members = _by_members(landscape, oids)
-        kinds[vid] = from_model or from_members
-        how[vid] = (landscape.categories.get(vid, ""), from_model, from_members)
+        category = landscape.categories.get(vid, "")
+        named = vid in landscape.categories
+        kinds[vid] = MODEL_KIND.get(category) or ("other" if named else "unnamed")
+        how[vid] = (category, kinds[vid], _by_members(landscape, oids))
     return kinds, sizes, how
 
 
@@ -129,21 +134,22 @@ def evidence(how: dict) -> str:
     Printed every run. If the model ever stops naming its diagrams, this is
     what shows it — the fallback column would carry the whole classification.
     """
-    named = {k: v for k, v in how.items() if v[1]}
+    named = {k: v for k, v in how.items() if v[1] != "unnamed"}
     rows: dict[tuple, int] = {}
-    for _vid, (category, from_model, from_members) in how.items():
-        key = (category or "(not an object in the model)",
-               from_model or "-", from_members)
+    for _vid, (category, kind, guess) in how.items():
+        key = (category or "(not an object in the model)", kind, guess)
         rows[key] = rows.get(key, 0) + 1
 
     out = [f"  views named by the model : {len(named)} of {len(how)}",
            "",
-           f"  {'model category':<32}{'kind':<12}"
-           f"{'fallback would say':<20}count",
-           f"  {'-' * 70}"]
-    for (category, from_model, from_members), n in sorted(
-            rows.items(), key=lambda kv: -kv[1]):
-        out.append(f"  {category:<32}{from_model:<12}{from_members:<20}{n}")
+           f"  {'model category':<32}{'planned as':<12}"
+           f"{'old guess said':<16}count",
+           f"  {'-' * 68}"]
+    for (category, kind, guess), n in sorted(rows.items(),
+                                             key=lambda kv: -kv[1]):
+        mark = " " if kind in CONVERTIBLE else " ."
+        out.append(f"  {category:<32}{kind:<12}{guess:<16}{n}{mark}")
+    out += ["", "  ( . = not fetched )"]
     return "\n".join(out)
 
 
