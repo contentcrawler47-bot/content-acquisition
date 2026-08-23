@@ -27,10 +27,22 @@ from pathlib import Path
 REMOTE = os.environ.get("PUBLISH_REMOTE", "gdrive")
 ROOT = os.environ.get("PUBLISH_ROOT", "content")
 
-REQUIRED_ENV = [
+# Only the token is required. rclone ships with a built-in OAuth client, so a
+# Google Cloud project is optional: leave client_id and client_secret blank
+# during `rclone config` and rclone uses its own.
+#
+#   own client     needs a Cloud project; a dedicated quota; an unpublished
+#                  app expires refresh tokens after 7 days, so it must be set
+#                  to "In production"
+#   built-in       no Cloud project at all, and no 7-day expiry since rclone's
+#                  app is already published; the quota is shared with other
+#                  rclone users, so heavy use can be rate limited
+#
+# For a weekly sync of a few dozen files the built-in client is ample.
+REQUIRED_ENV = ["RCLONE_CONFIG_GDRIVE_TOKEN"]
+OPTIONAL_ENV = [
     "RCLONE_CONFIG_GDRIVE_CLIENT_ID",
     "RCLONE_CONFIG_GDRIVE_CLIENT_SECRET",
-    "RCLONE_CONFIG_GDRIVE_TOKEN",
 ]
 
 
@@ -56,7 +68,23 @@ def preflight() -> None:
     missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
     if missing:
         raise PublishError(
-            "missing Drive credentials in environment: " + ", ".join(missing))
+            "missing Drive credentials in environment: " + ", ".join(missing)
+            + ". GDRIVE_TOKEN is required; GDRIVE_CLIENT_ID and "
+              "GDRIVE_CLIENT_SECRET are optional and only needed when using "
+              "your own Google Cloud OAuth client.")
+
+    # A workflow passes every secret, so an unset one arrives as an empty
+    # string. rclone treats an empty client_id as configured-but-blank rather
+    # than absent, which breaks the fallback — so remove them.
+    using_own = False
+    for key in OPTIONAL_ENV:
+        if os.environ.get(key):
+            using_own = True
+        else:
+            os.environ.pop(key, None)
+    print(f"  auth: {'own OAuth client' if using_own else 'rclone built-in client'}",
+          flush=True)
+
     os.environ.setdefault("RCLONE_CONFIG_GDRIVE_TYPE", "drive")
     os.environ.setdefault("RCLONE_CONFIG_GDRIVE_SCOPE", "drive.file")
 
