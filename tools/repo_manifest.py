@@ -32,7 +32,11 @@ REPO = Path(__file__).resolve().parent.parent
 MANIFEST = REPO / "MANIFEST.sha256"
 
 # Directories that never belong in the manifest.
-SKIP_DIRS = {".git", "__pycache__", "out", ".venv", ".runs", ".idea", ".vscode"}
+# .changeset_tmp is where apply_changeset extracts a zip. It lives inside the
+# repo, so without excluding it the extracted payload would be counted as repo
+# content — which would break the base-digest check it exists to serve.
+SKIP_DIRS = {".git", "__pycache__", "out", ".venv", ".runs", ".idea",
+             ".vscode", ".changeset_tmp"}
 SKIP_SUFFIX = {".pyc", ".pyo"}
 # NEXT_STEPS.md is instructions handed over with a revision, not repo content.
 # Excluded from both sides of the comparison, so committing it or not makes no
