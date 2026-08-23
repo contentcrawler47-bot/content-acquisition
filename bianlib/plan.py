@@ -60,35 +60,91 @@ def failure_limit(planned: int) -> int:
                max(1, int(planned * MAX_FAILED_SHARE)))
 
 
-def classify(landscape: L.Landscape) -> tuple[dict, dict]:
-    """{viewId: kind} plus the member counts, from the model alone.
+#: The diagram objects' own categories, which is what the model calls them.
+#: A view id appears to BE the id of the diagram object it renders, so this is
+#: a direct reading rather than an inference from what the view contains.
+MODEL_KIND = {
+    "Sequence diagram": "sequence",
+    "Class diagram": "class",
+    "Total view": "archimate",
+    "Capability map view": "archimate",
+    "Business process diagram": "archimate",
+}
 
-    Scores each view by how many of its members belong to each concept family
-    and takes the winner. Scoring rather than first-match matters: a sequence
-    diagram contains a handful of Class objects too, and vice versa.
+
+def _by_members(landscape: L.Landscape, oids: list[str]) -> str:
+    """Kind inferred from what the view contains.
+
+    Scoring rather than first-match: a sequence diagram contains a handful of
+    Class objects too, and vice versa. Used only where the model does not name
+    the diagram itself — it over-counts class views, because several ArchiMate
+    view types are full of objects this cannot tell from UML classes.
+    """
+    seq = cls = arch = 0
+    for oid in oids:
+        cat = landscape.categories.get(oid, "")
+        if cat in L.SEQUENCE_MEMBER_CATEGORIES:
+            seq += 1
+        elif cat in L.CLASS_MEMBER_CATEGORIES:
+            cls += 1
+        elif cat in L.ARCHIMATE_MEMBER_CATEGORIES:
+            arch += 1
+    best = max((seq, "sequence"), (cls, "class"), (arch, "archimate"))
+    return best[1] if best[0] else "unknown"
+
+
+def classify(landscape: L.Landscape) -> tuple[dict, dict, dict]:
+    """{viewId: kind}, the member counts, and how each kind was decided.
+
+    Two independent readings, in order of trust:
+
+    1. **The model names the diagram.** Every diagram is itself an object, and
+       its category says what it is — "Class diagram", "Sequence diagram",
+       "Total view", "Capability map view". Where the view id resolves to such
+       an object, that is the answer and there is nothing to infer.
+    2. **What the view contains.** Only for views the model does not name.
+
+    The first reading was added after the second put 1,043 views in the class
+    bucket against a known 802 — it cannot separate a UML class diagram from
+    the several ArchiMate view types built out of similar-looking objects, and
+    240 extra pages is 240 requests of somebody else's server for nothing.
     """
     members = landscape.views_to_members()
-    kinds, sizes = {}, {}
-    for vid, oids in members.items():
-        seq = cls = arch = 0
-        for oid in oids:
-            cat = landscape.categories.get(oid, "")
-            if cat in L.SEQUENCE_MEMBER_CATEGORIES:
-                seq += 1
-            elif cat in L.CLASS_MEMBER_CATEGORIES:
-                cls += 1
-            elif cat in L.ARCHIMATE_MEMBER_CATEGORIES:
-                arch += 1
+    all_views = set(members) | {str(v) for v in landscape.insite_views}
+
+    kinds, sizes, how = {}, {}, {}
+    for vid in all_views:
+        oids = members.get(vid, [])
         sizes[vid] = len(oids)
-        best = max((seq, "sequence"), (cls, "class"), (arch, "archimate"))
-        kinds[vid] = best[1] if best[0] else "unknown"
-    # Views with no members at all still exist in insiteViews; capability maps
-    # have a median of zero members. They convert to nothing, so they are
-    # classified but never planned.
-    for vid in landscape.insite_views:
-        kinds.setdefault(str(vid), "unknown")
-        sizes.setdefault(str(vid), 0)
-    return kinds, sizes
+        from_model = MODEL_KIND.get(landscape.categories.get(vid, ""), "")
+        from_members = _by_members(landscape, oids)
+        kinds[vid] = from_model or from_members
+        how[vid] = (landscape.categories.get(vid, ""), from_model, from_members)
+    return kinds, sizes, how
+
+
+def evidence(how: dict) -> str:
+    """Cross-tabulate the two readings, so a disagreement is visible.
+
+    Printed every run. If the model ever stops naming its diagrams, this is
+    what shows it — the fallback column would carry the whole classification.
+    """
+    named = {k: v for k, v in how.items() if v[1]}
+    rows: dict[tuple, int] = {}
+    for _vid, (category, from_model, from_members) in how.items():
+        key = (category or "(not an object in the model)",
+               from_model or "-", from_members)
+        rows[key] = rows.get(key, 0) + 1
+
+    out = [f"  views named by the model : {len(named)} of {len(how)}",
+           "",
+           f"  {'model category':<32}{'kind':<12}"
+           f"{'fallback would say':<20}count",
+           f"  {'-' * 70}"]
+    for (category, from_model, from_members), n in sorted(
+            rows.items(), key=lambda kv: -kv[1]):
+        out.append(f"  {category:<32}{from_model:<12}{from_members:<20}{n}")
+    return "\n".join(out)
 
 
 def counts(kinds: dict) -> dict:
@@ -150,7 +206,7 @@ def build(landscape: L.Landscape, source_id: str, chunk_count: int,
           kinds_wanted=CONVERTIBLE, limit: int = 0,
           expected: dict = None) -> dict:
     """The work plan: which views, in what order, split how."""
-    kinds, sizes = classify(landscape)
+    kinds, sizes, how = classify(landscape)
     kind_counts = counts(kinds)
 
     wanted = sorted(
@@ -172,6 +228,7 @@ def build(landscape: L.Landscape, source_id: str, chunk_count: int,
         "plan_sha": plan_sha(wanted),
         "view_count": len(wanted),
         "classification": kind_counts,
+        "evidence": evidence(how),
         "problems": plausible(kind_counts, expected),
         "chunks": [
             {"index": i + 1, "views": c,
@@ -183,6 +240,7 @@ def build(landscape: L.Landscape, source_id: str, chunk_count: int,
 
 def describe(plan: dict) -> str:
     lines = [
+        plan.get("evidence", ""), "",
         f"  landscape      {plan['landscape']}",
         f"  views planned  {plan['view_count']} of "
         f"{sum(plan['classification'].values())} known",
