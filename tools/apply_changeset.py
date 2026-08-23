@@ -17,6 +17,7 @@ CHANGESET.json:
 
     {
       "description": "Fix duplicate participant aliases",
+      "base_digest": "6cec645aaffc6a4f",
       "operations": [
         {"op": "add",    "path": "tools/new.py"},
         {"op": "update", "path": "core/existing.py"},
@@ -24,6 +25,11 @@ CHANGESET.json:
         {"op": "rename", "from": "tools/old.py", "to": "tools/new_name.py"}
       ]
     }
+
+`base_digest` is the repo state this changeset expects to start FROM. It is
+checked before anything is written, so applying changesets out of order is
+rejected up front with a clear message rather than surfacing later as a
+confusing list of missing files.
 
 Verification runs BEFORE any commit. If the resulting tree does not match
 MANIFEST.sha256 the changes are left uncommitted and the run fails, so a bad
@@ -35,6 +41,7 @@ changeset cannot land.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -44,6 +51,15 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 VALID_OPS = {"add", "update", "delete", "rename"}
+
+
+def current_digest() -> str:
+    """The repo's digest right now, via the same code repo_manifest uses."""
+    spec = importlib.util.spec_from_file_location(
+        "repo_manifest", REPO / "tools" / "repo_manifest.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.digest_of(mod.build())
 
 
 def fail(msg: str) -> int:
@@ -132,6 +148,37 @@ def main() -> int:
     print("=" * 70)
     print(f"  CHANGESET: {cs.get('description', '(no description)')}")
     print("=" * 70)
+
+    # ---- does this changeset belong on the current state? -----------
+    expected_base = cs.get("base_digest")
+    if expected_base:
+        try:
+            actual_base = current_digest()
+        except Exception as e:
+            actual_base = None
+            print(f"\n  could not compute the current digest: "
+                  f"{type(e).__name__}: {e}", flush=True)
+        print(f"\n  base digest expected : {expected_base}", flush=True)
+        print(f"  base digest actual   : {actual_base or '(unknown)'}",
+              flush=True)
+        if actual_base and actual_base != expected_base:
+            shutil.rmtree(workdir, ignore_errors=True)
+            print("\n  The repo is not in the state this changeset expects.",
+                  flush=True)
+            print("  Either an earlier changeset has not been applied, or one "
+                  "has been", flush=True)
+            print("  applied that this changeset does not know about. Nothing "
+                  "was changed.", flush=True)
+            print("\n  Run 'Verify repo contents' to see the current state, "
+                  "then apply", flush=True)
+            print("  changesets in the order they were issued.", flush=True)
+            return fail(f"base digest mismatch: expected {expected_base}, "
+                        f"found {actual_base}")
+    else:
+        print("\n  NOTE: this changeset declares no base_digest, so the "
+              "starting state", flush=True)
+        print("  is not checked. Ordering errors will only surface at "
+              "verification.", flush=True)
     print(f"\n  {len(ops)} operation(s)"
           + ("   [DRY RUN — nothing will be written]" if args.dry_run else ""),
           flush=True)
