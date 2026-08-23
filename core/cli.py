@@ -197,6 +197,17 @@ def cmd_check_publish(_sources, _args) -> int:
               "as repo secrets.", flush=True)
         return 1
     try:
+        version = publish_mod.check_binary()
+        print(f"  [PASS] rclone runs — {version}", flush=True)
+    except publish_mod.PublishError as e:
+        print(f"  [FAIL] rclone will not run: {e}", flush=True)
+        print("\n  Every rclone call would fail the same way. A common cause "
+              "is an", flush=True)
+        print("  environment variable named RCLONE_<SOMETHING> that rclone "
+              "reads as one", flush=True)
+        print("  of its own flags.", flush=True)
+        return 1
+    try:
         folders = publish_mod.list_published()
         print(f"  [PASS] Drive reachable — "
               f"{len(folders)} published source(s): "

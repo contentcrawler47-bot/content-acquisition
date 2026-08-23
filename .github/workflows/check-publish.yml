@@ -17,7 +17,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RCLONE_VERSION: "1.71.1"
+  # NOT named RCLONE_VERSION: rclone maps RCLONE_<FLAG> env vars onto
+  # its own flags, so RCLONE_VERSION is read as --version (a boolean)
+  # and every rclone invocation dies with a parse error.
+  RC_VERSION: "1.71.1"
 
 jobs:
   check-publish:
@@ -32,13 +35,13 @@ jobs:
       - name: Install rclone (pinned, checksum verified)
         run: |
           set -euo pipefail
-          base="https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}"
-          pkg="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          base="https://github.com/rclone/rclone/releases/download/v${RC_VERSION}"
+          pkg="rclone-v${RC_VERSION}-linux-amd64.zip"
           curl -fsSLO "${base}/${pkg}"
           curl -fsSLO "${base}/SHA256SUMS"
           grep " ${pkg}\$" SHA256SUMS | sha256sum -c -
           unzip -q "${pkg}"
-          sudo install -m 755 "rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          sudo install -m 755 "rclone-v${RC_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
 
       - name: Check Drive credentials and reachability
         env:

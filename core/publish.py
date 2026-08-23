@@ -121,13 +121,32 @@ def publish(source_id: str, outdir: Path, dry_run: bool = False) -> str:
     return dest
 
 
+def check_binary() -> str:
+    """Confirm rclone actually runs.
+
+    Worth its own call: an environment problem — such as an env var rclone
+    misreads as one of its own flags — breaks every invocation, and without
+    this the failure surfaces as an empty result that looks like success.
+    """
+    return _rclone("version", capture=True).splitlines()[0].strip()
+
+
 def list_published() -> list[str]:
-    """Source folders currently under the publish root."""
+    """Source folders currently under the publish root.
+
+    A missing root is normal before the first publish and returns []. Any
+    other failure is raised: previously everything was swallowed, so a broken
+    rclone reported "0 published sources" and the check passed when it should
+    have failed.
+    """
     preflight()
     try:
         raw = _rclone("lsjson", f"{REMOTE}:{ROOT}", "--dirs-only", capture=True)
-    except PublishError:
-        return []
+    except PublishError as e:
+        msg = str(e).lower()
+        if "directory not found" in msg or "not found" in msg:
+            return []
+        raise
     return sorted(e["Name"] for e in json.loads(raw or "[]"))
 
 
