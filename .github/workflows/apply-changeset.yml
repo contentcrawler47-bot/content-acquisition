@@ -1,0 +1,133 @@
+name: Apply changeset
+
+# Applies a revision from a single zip instead of a dozen manual file edits.
+#
+# HOW TO USE
+#   1. Upload the changeset zip to changesets/ in this repo
+#      (Add file -> Upload files, drag it in, commit).
+#   2. Run this workflow, giving the zip's path.
+#   3. It applies the operations, verifies the result against the manifest
+#      the zip declares, and commits ONLY if verification passes.
+#
+# The zip contains:
+#   CHANGESET.json    the operations: add / update / delete / rename
+#   MANIFEST.sha256   the exact state the repo must be in afterwards
+#   files/            new and updated content, mirroring repo paths
+#
+# SAFETY
+#   Verification runs BEFORE the commit. A changeset that does not produce
+#   the declared state leaves the working tree dirty and fails the run —
+#   nothing is pushed. Path traversal, absolute paths, writes inside .git,
+#   and payload files with no matching operation are all rejected before
+#   anything is written.
+#
+#   Start with dry_run to see the plan without touching the repo.
+#
+# WORKFLOW FILES
+#   GITHUB_TOKEN is not permitted to push changes under .github/workflows/.
+#   To include workflow files in a changeset, add a personal access token
+#   with 'workflow' scope as the CHANGESET_TOKEN secret; otherwise the push
+#   is rejected by GitHub with a permissions error.
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip:
+        description: Path to the changeset zip in this repo
+        required: true
+        default: changesets/pending.zip
+      dry_run:
+        description: Show the plan without changing anything
+        type: boolean
+        default: true
+      delete_zip:
+        description: Delete the zip after a successful apply
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-changeset
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Apply and verify a changeset
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # A PAT is needed only when the changeset touches workflow files.
+          # Falls back to GITHUB_TOKEN, which covers everything else.
+          token: ${{ secrets.CHANGESET_TOKEN || github.token }}
+
+      - name: Check the changeset exists
+        run: |
+          if [ ! -f "${{ inputs.zip }}" ]; then
+            echo "::error title=Changeset not found::${{ inputs.zip }} is not in the repo."
+            echo "Upload it first: Add file -> Upload files."
+            exit 1
+          fi
+          ls -la "${{ inputs.zip }}"
+
+      - name: Apply changeset
+        id: apply
+        run: |
+          # Capture the description first — the zip may be deleted before
+          # the commit step runs.
+          desc=$(python3 -c "
+          import json, zipfile, sys
+          with zipfile.ZipFile('${{ inputs.zip }}') as z:
+              n = [m for m in z.namelist() if m.endswith('CHANGESET.json')][0]
+              print(json.loads(z.read(n)).get('description', 'apply changeset'))
+          ")
+          echo "CHANGESET_DESC=$desc" >> "$GITHUB_ENV"
+          echo "description: $desc"
+          python3 tools/apply_changeset.py "${{ inputs.zip }}" \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Show what changed
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git status --short
+          echo
+          git diff --stat || true
+
+      - name: Commit and push
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -e
+          if [ "${{ inputs.delete_zip }}" = "true" ]; then
+            rm -f "${{ inputs.zip }}"
+            echo "removed ${{ inputs.zip }}"
+          fi
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing to commit — the repo already matched the changeset."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "$CHANGESET_DESC" \
+            -m "Applied from ${{ inputs.zip }}, verified against MANIFEST.sha256"
+          git pull --rebase --autostash
+          git push
+
+      - name: Confirm the committed state
+        if: ${{ !inputs.dry_run }}
+        run: python3 tools/repo_manifest.py --verify
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "::error title=Changeset not applied::Nothing was committed."
+          echo "  Problems listed before 'FAILED' -> the changeset is malformed;"
+          echo "     no file was written."
+          echo "  Verification failure after 'Applying' -> files were written but"
+          echo "     the result did not match MANIFEST.sha256, so no commit was made."
+          echo "  Push rejected mentioning 'workflow' -> the changeset touches"
+          echo "     .github/workflows/ and needs a CHANGESET_TOKEN secret with"
+          echo "     'workflow' scope."
