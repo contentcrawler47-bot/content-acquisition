@@ -72,6 +72,10 @@ env:
   # invocation dies with a parse error.
   RC_VERSION: "1.71.1"
   SOURCE_ID: bian-v14
+  # Pinned and hash-checked, like rclone. The hash is the release asset's, so a
+  # substituted jar fails the step rather than running.
+  PLANTUML_VERSION: "1.2026.0"
+  PLANTUML_SHA256: "b3da2f352a835615ecb63eb754930f8aab57363d5fe1a0660bf2a12827b6b553"
   PARTS: out/_parts/bian-v14
   CACHE: out/_parts/bian-v14/cache.json
 
@@ -154,15 +158,52 @@ jobs:
           key: landscape-bian-v14-pages-${{ github.run_id }}
           restore-keys: landscape-bian-v14-pages-
 
+      # Cached across every job in the run, so the jar is fetched once.
+      - name: Restore PlantUML
+        uses: actions/cache@v4
+        with:
+          path: plantuml.jar
+          key: plantuml-${{ env.PLANTUML_VERSION }}
+
+      - name: Install PlantUML (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          if [ ! -f plantuml.jar ]; then
+            curl -fsSL -o plantuml.jar \
+              "https://github.com/plantuml/plantuml/releases/download/v${PLANTUML_VERSION}/plantuml-${PLANTUML_VERSION}.jar"
+          fi
+          echo "${PLANTUML_SHA256}  plantuml.jar" | sha256sum -c -
+
       - name: Harvest chunk ${{ matrix.index }}
+        id: harvest
         run: |
           python3 tools/landscape.py chunk "$SOURCE_ID" \
             --index "${{ matrix.index }}" \
             --delay "${{ inputs.delay || '1.0' }}" \
             --cache "$CACHE"
 
+      # PlantUML renders an error image rather than refusing, so nothing
+      # downstream notices invalid syntax — a whole landscape once published
+      # with every diagram broken. Only PlantUML can settle whether PlantUML
+      # will render something, so it is asked. Here as well as at assembly
+      # because a renderer fault affects every diagram equally: catching it in
+      # chunk 1 saves nine chunks of pointless requests to bian.org.
+      - name: Validate this chunk's PlantUML
+        id: plantuml
+        run: |
+          set -euo pipefail
+          part=$(printf 'chunk-%02d' "${{ matrix.index }}")
+          python3 tools/check_plantuml.py "$PARTS/$part/items.json" \
+            --jar plantuml.jar
+
+      - name: PlantUML invalid in this chunk
+        if: failure() && steps.plantuml.outcome == 'failure'
+        run: |
+          echo "::error title=PLANTUML invalid in chunk ${{ matrix.index }}::The pages were fetched, but PlantUML will not render some of the diagrams they produced. Later chunks were cancelled."
+          echo "A renderer fault affects every diagram equally, so fix the renderer rather than retrying this chunk."
+
       - name: Chunk failed
-        if: failure()
+        if: failure() && steps.harvest.outcome == 'failure'
         run: |
           echo "::error title=CHUNK ${{ matrix.index }} failed::This chunk did not harvest the views the plan assigned it. Later chunks were cancelled and nothing will be published."
           echo "Use 'Re-run failed jobs' to retry this chunk alone — the plan artifact is reused, so the shards are not read again."
@@ -214,6 +255,32 @@ jobs:
         id: assemble
         run: python3 tools/landscape.py assemble "$SOURCE_ID"
 
+      # Cached across every job in the run, so the jar is fetched once.
+      - name: Restore PlantUML
+        uses: actions/cache@v4
+        with:
+          path: plantuml.jar
+          key: plantuml-${{ env.PLANTUML_VERSION }}
+
+      - name: Install PlantUML (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          if [ ! -f plantuml.jar ]; then
+            curl -fsSL -o plantuml.jar \
+              "https://github.com/plantuml/plantuml/releases/download/v${PLANTUML_VERSION}/plantuml-${PLANTUML_VERSION}.jar"
+          fi
+          echo "${PLANTUML_SHA256}  plantuml.jar" | sha256sum -c -
+
+      - name: Validate every diagram in the bundle
+        id: plantuml
+        run: python3 tools/check_plantuml.py "out/$SOURCE_ID" --jar plantuml.jar
+
+      - name: PlantUML validation failed
+        if: failure() && steps.plantuml.outcome == 'failure'
+        run: |
+          echo "::error title=PLANTUML invalid::The landscape harvested and verified, but PlantUML will not render some diagrams. Nothing was published."
+          echo "The diagrams are named above with PlantUML's own message. Publishing them would put error images in Drive inside correct-looking markdown."
+
       - name: Assembly failed
         if: failure() && steps.assemble.outcome == 'failure'
         run: |
@@ -248,7 +315,7 @@ jobs:
         run: python3 tools/landscape.py publish "$SOURCE_ID"
 
       - name: Publishing failed
-        if: failure() && steps.assemble.outcome == 'success'
+        if: failure() && steps.plantuml.outcome == 'success'
         run: |
           echo "::error title=PUBLISHING failed::The landscape was harvested and verified, but the Drive sync failed."
           echo "This is not a source problem. Run 'Check publishing target (Google Drive)'."

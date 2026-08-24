@@ -23,6 +23,7 @@ bianlib/                   BIAN extraction, shared across landscape versions
   pipeline.py              plan -> chunk -> assemble
 tools/
   landscape.py             the chunked full-landscape harvest
+  check_plantuml.py        hands every diagram to PlantUML to verify it renders
 .github/workflows/
   landscape-bian-v14.yml   full landscape, in verified chunks
   validate-bian.yml        can we still extract? (cheap, weekly)
@@ -40,6 +41,11 @@ python3 tools/landscape.py plan     bian-v14 --chunks 10
 python3 tools/landscape.py chunk    bian-v14 --index 1
 python3 tools/landscape.py assemble bian-v14
 ```
+
+Every chunk's diagrams are handed to PlantUML itself to confirm they render —
+PlantUML draws an error image rather than refusing, so a syntax fault is
+invisible to anything that only inspects the markdown, and one such fault once
+broke all 1,181 published diagrams while every check passed.
 
 The model is read once and passed downstream, so the shards are never re-read
 per chunk. Each chunk verifies its own accounting before the next begins, and
