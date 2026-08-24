@@ -38,6 +38,18 @@ from bianlib import views as V
 from bianlib.fetch import Fetcher, SourceUnhappy, robots_disallows
 from core.render import write_bundles
 
+#: Bumped whenever the diagram renderer changes in a way that alters its
+#: output. Cached pages carry the version that produced them, and a mismatch
+#: means the cached markdown is re-generated rather than reused.
+#:
+#: Without this the page cache is a trap: an unchanged view answers 304, the
+#: previous run's conversion is reused, and a renderer fix never reaches the
+#: published content. The inline-comment fix that made every diagram
+#: unrenderable would have survived its own correction.
+#:
+#: 2 — inline comments use the paired /' '/ form; names and titles sanitised
+RENDER_VERSION = 2
+
 #: Diagrams are large. 20 to a file keeps each one comfortably readable
 #: through the Drive connector; semantic items are much smaller and group at
 #: 250 as they always have.
@@ -71,10 +83,17 @@ def _cache(path: Path) -> dict:
         return {}
 
 
-def _validators_from(cache: dict) -> dict:
+def _validators_from(cache: dict, version: int) -> dict:
+    """Validators for entries this renderer can still use.
+
+    An entry from an older renderer has to be converted again whatever the
+    server says, so sending its ETag would buy a 304 and then a second, full
+    request for the same page — two requests where one was needed. Those
+    entries are simply not offered a validator.
+    """
     return {url: {"etag": e.get("etag", ""),
                   "last_modified": e.get("last_modified", "")}
-            for url, e in cache.items()}
+            for url, e in cache.items() if e.get("render") == version}
 
 
 # --- stage 1: plan ---------------------------------------------------------
@@ -150,9 +169,13 @@ def do_chunk(source, parts: Path, index: int, delay: float,
 
     cache = _cache(cache_in)
     fetcher = Fetcher(work["base"], delay=delay,
-                      validators=_validators_from(cache))
+                      validators=_validators_from(cache, RENDER_VERSION))
     if cache:
-        print(f"  {len(cache)} pages cached from a previous run", flush=True)
+        stale = sum(1 for e in cache.values()
+                    if e.get("render") != RENDER_VERSION)
+        print(f"  {len(cache)} pages cached from a previous run"
+              + (f" ({stale} from an older renderer, "
+                 f"which will be re-converted)" if stale else ""), flush=True)
 
     items, failed, skipped, reused = [], [], [], 0
     strays: list[tuple[str, int]] = []
@@ -181,8 +204,11 @@ def do_chunk(source, parts: Path, index: int, delay: float,
 
         if resp.from_cache:
             # Unchanged since last time. Reuse what it converted to then,
-            # rather than asking for a body we already have.
-            known = cache.get(url, {}).get("item")
+            # rather than asking for a body we already have — but only if the
+            # renderer that produced it is the one running now.
+            entry = cache.get(url, {})
+            known = (entry.get("item")
+                     if entry.get("render") == RENDER_VERSION else None)
             if known:
                 items.append(known)
                 reused += 1
@@ -220,7 +246,7 @@ def do_chunk(source, parts: Path, index: int, delay: float,
         items.append(item)
         validator = fetcher.validators.get(url)
         if validator:
-            cache[url] = dict(validator, item=item)
+            cache[url] = dict(validator, item=item, render=RENDER_VERSION)
         if n % 25 == 0 or n == len(views):
             print(f"    {n:>4}/{len(views)}  {len(items)} converted, "
                   f"{len(skipped)} skipped, {len(failed)} failed", flush=True)

@@ -330,6 +330,34 @@ def alias(name: str, used: set) -> str:
     return a
 
 
+def quoted(text: str) -> str:
+    """A name safe to put inside PlantUML's double quotes.
+
+    A double quote in a name would close the string early and a newline would
+    end the statement, either of which turns the whole diagram into an error
+    image rather than a slightly wrong label.
+    """
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    return text.replace('"', "'")
+
+
+def comment(text: str) -> str:
+    """An inline PlantUML comment.
+
+    A leading apostrophe only opens a comment at the START of a line. Trailing
+    "' object 34300" on a participant or class line is a syntax error, and
+    PlantUML's response is to render an error image instead of the diagram —
+    so every one of the 1,181 published diagrams failed to draw while the
+    markdown around them looked perfectly fine.
+
+    Inline comments use the paired form. Verified against PlantUML 1.2026.0.
+    """
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    # "'/" inside the text would close the comment early.
+    text = text.replace("'/", "' /")
+    return f" /' {text} '/" if text else ""
+
+
 ARROWS = {
     "UML_Generalization": "--|>",
     "UML_Realization": "..|>",
@@ -348,14 +376,15 @@ def class_plantuml(d: dict, source: str) -> str:
          "skinparam classAttributeIconSize 0",
          "hide circle", ""]
     if d["title"]:
-        L += [f"title {d['title']}", ""]
+        L += [f"title {quoted(d['title'])}", ""]
 
     used, aliases = set(), {}
     for cid, c in sorted(d["classes"].items(), key=lambda kv: (kv[1]["x"], kv[1]["y"])):
         a = alias(c["name"], used)
         aliases[cid] = a
-        sem = f"  ' object {c['semantic']}" if c["semantic"] else ""
-        L.append(f'{c.get("kind", "class")} "{c["name"]}" as {a} {{{sem}')
+        sem = comment(f"object {c['semantic']}") if c["semantic"] else ""
+        L.append(f'{c.get("kind", "class")} "{quoted(c["name"])}" as {a} '
+                 f'{{{sem}')
         for attr in c["attributes"]:
             text = attr["text"].replace("{", "(").replace("}", ")").strip()
             if text:
@@ -368,11 +397,11 @@ def class_plantuml(d: dict, source: str) -> str:
     # a real class.
     if d.get("unattached"):
         L.append('class "(unattached attributes)" as Unattached {')
-        L.append("  ' Ownership not derivable from this view's geometry.")
+        L.append("  /' Ownership not derivable from this view's geometry. '/")
         for attr in d["unattached"]:
             text = attr["text"].replace("{", "(").replace("}", ")").strip()
             if text:
-                sem = f"  ' object {attr['semantic']}" if attr["semantic"] else ""
+                sem = comment(f"object {attr['semantic']}") if attr["semantic"] else ""
                 L.append(f"  {text}{sem}")
         L += ["}", ""]
 
@@ -383,7 +412,7 @@ def class_plantuml(d: dict, source: str) -> str:
             continue
         arrow = ARROWS.get(e["kind"], "--")
         lbl = f" : {e['label']}" if e["label"] else ""
-        note = "" if e["gap"] < 1 else f"  ' endpoint gap {e['gap']:.0f}"
+        note = "" if e["gap"] < 1 else comment(f"endpoint gap {e['gap']:.0f}")
         L.append(f"{aliases[e['from']]} {arrow} {aliases[e['to']]}{lbl}{note}")
 
     L += ["", "@enduml", ""]
@@ -397,14 +426,14 @@ def to_plantuml(d: dict, source: str) -> str:
          "skinparam sequenceMessageAlign left",
          "hide footbox", ""]
     if d["title"]:
-        L.append(f"title {d['title']}")
+        L.append(f"title {quoted(d['title'])}")
         L.append("")
 
     used: set = set()
     for p in d["participants"]:
         p["alias"] = alias(p["name"], used)
-        sem = f"  ' object {p['semantic']}" if p["semantic"] else ""
-        L.append(f'participant "{p["name"]}" as {p["alias"]}{sem}')
+        sem = comment(f"object {p['semantic']}") if p["semantic"] else ""
+        L.append(f'participant "{quoted(p["name"])}" as {p["alias"]}{sem}')
     L.append("")
 
     by_key = {p["key"]: p["alias"] for p in d["participants"]}
