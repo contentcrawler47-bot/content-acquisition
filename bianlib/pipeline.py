@@ -155,6 +155,7 @@ def do_chunk(source, parts: Path, index: int, delay: float,
         print(f"  {len(cache)} pages cached from a previous run", flush=True)
 
     items, failed, skipped, reused = [], [], [], 0
+    strays: list[tuple[str, int]] = []
     attributes = unassigned = 0
     started = time.time()
 
@@ -205,7 +206,10 @@ def do_chunk(source, parts: Path, index: int, delay: float,
             continue
 
         attributes += sum(len(c["attributes"]) for c in parsed["classes"].values())
+        attributes += parsed["unassigned_attrs"]
         unassigned += parsed["unassigned_attrs"]
+        if parsed["unassigned_attrs"]:
+            strays.append((vid, parsed["unassigned_attrs"]))
         item = {
             "id": f"view-{vid}",
             "name": parsed["title"],
@@ -232,6 +236,7 @@ def do_chunk(source, parts: Path, index: int, delay: float,
         "skipped": skipped,
         "reused_from_cache": reused,
         "attributes": attributes,
+        "unattached_views": sorted(strays, key=lambda s: -s[1])[:20],
         "unassigned_attrs": unassigned,
         "seconds": round(time.time() - started, 1),
         "fetch": dict(fetcher.stats),
@@ -248,6 +253,12 @@ def do_chunk(source, parts: Path, index: int, delay: float,
     print(f"\n  fetch: {fetcher.report()}", flush=True)
     for entry in (failed + skipped)[:10]:
         print(f"    {entry['id']}: {entry['reason']}", flush=True)
+    if strays:
+        worst = sorted(strays, key=lambda s: -s[1])[:5]
+        print(f"  {unassigned} attribute rows across {len(strays)} views could "
+              f"not be tied to a box and were", flush=True)
+        print(f"  carried through as '(unattached attributes)'. Worst: "
+              + ", ".join(f"view {v} ({n})" for v, n in worst), flush=True)
 
     ok = P.report(f"CHUNK {index} VERIFICATION",
                   P.verify_chunk(result, chunk, work["plan_sha"]))

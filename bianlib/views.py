@@ -53,6 +53,22 @@ RECT_WH_RE = re.compile(r'<rect[^>]*?width="([-\d.]+)"[^>]*?height="([-\d.]+)"')
 PATH_D_RE = re.compile(r'<path[^>]*?d="([^"]+)"')
 NUM_RE = re.compile(r"[-\d.]+")
 
+#: Boxes an attribute row can legitimately live inside. Only UML_Class was
+#: recognised at first, which stranded every literal in an enumeration and
+#: every field in an interface or data type — 35 rows in one chunk of 130
+#: views. The PlantUML keyword differs per kind, hence the mapping rather
+#: than a set.
+CONTAINERS = {
+    "UML_Class": "class",
+    "UML_Enumeration": "enum",
+    "UML_Interface": "interface",
+    "UML_DataType": "class",
+    "UML_Object": "object",
+    "UML_Component": "component",
+    "UML_Signal": "class",
+    "UML_PrimitiveType": "class",
+}
+
 
 def path_endpoints(chunk: str):
     """First and last point of a connector path.
@@ -201,17 +217,18 @@ def parse_view(html: str, source: str = "", known_title: str = "",
     # ---- class diagram ------------------------------------------------
     classes = {}
     for bid, b in bs.items():
-        if b["concept"] != "UML_Class":
+        if b["concept"] not in CONTAINERS:
             continue
         r = RECT_RE.search(b["chunk"])
         if not r:
             continue
         x, y, w, hh = (float(v) for v in r.groups())
         classes[bid] = {"x": x, "y": y, "w": w, "h": hh,
+                        "kind": CONTAINERS[b["concept"]],
                         "name": label_for(bs, bid) or f"Class {bid}",
                         "semantic": b["semantic"], "attributes": []}
 
-    unassigned = 0
+    unattached = []
     for bid, b in bs.items():
         if b["concept"] != "UML_Attribute":
             continue
@@ -226,7 +243,12 @@ def parse_view(html: str, source: str = "", known_title: str = "",
                 owner = cid
                 break
         if owner is None:
-            unassigned += 1
+            # Never silently dropped. An attribute whose owner cannot be
+            # established geometrically is still content BIAN published, so it
+            # is carried through to an explicit "(unattached)" box rather than
+            # being counted and discarded.
+            unattached.append({"text": label_for(bs, bid),
+                               "semantic": b["semantic"]})
             continue
         classes[owner]["attributes"].append(
             {"y": ay, "text": label_for(bs, bid), "semantic": b["semantic"]})
@@ -282,7 +304,8 @@ def parse_view(html: str, source: str = "", known_title: str = "",
 
     return {"title": title, "view_id": view_id, "participants": participants,
             "messages": messages, "fragments": fragments,
-            "classes": classes, "edges": edges, "unassigned_attrs": unassigned,
+            "classes": classes, "edges": edges,
+            "unattached": unattached, "unassigned_attrs": len(unattached),
             "concepts": dict(concepts)}
 
 
@@ -332,13 +355,26 @@ def class_plantuml(d: dict, source: str) -> str:
         a = alias(c["name"], used)
         aliases[cid] = a
         sem = f"  ' object {c['semantic']}" if c["semantic"] else ""
-        L.append(f'class "{c["name"]}" as {a} {{{sem}')
+        L.append(f'{c.get("kind", "class")} "{c["name"]}" as {a} {{{sem}')
         for attr in c["attributes"]:
             text = attr["text"].replace("{", "(").replace("}", ")").strip()
             if text:
                 L.append(f"  {text}")
         L.append("}")
         L.append("")
+
+    # Rows whose owning box could not be established geometrically. Shown
+    # rather than dropped, and labelled so nobody mistakes them for members of
+    # a real class.
+    if d.get("unattached"):
+        L.append('class "(unattached attributes)" as Unattached {')
+        L.append("  ' Ownership not derivable from this view's geometry.")
+        for attr in d["unattached"]:
+            text = attr["text"].replace("{", "(").replace("}", ")").strip()
+            if text:
+                sem = f"  ' object {attr['semantic']}" if attr["semantic"] else ""
+                L.append(f"  {text}{sem}")
+        L += ["}", ""]
 
     for e in d["edges"]:
         if e["from"] not in aliases or e["to"] not in aliases:
@@ -429,8 +465,10 @@ def diagram_markdown(d: dict, body: str, kind: str, source: str) -> str:
                      f"**Messages:** {len(d['messages'])}")
     else:
         attrs = sum(len(c["attributes"]) for c in d["classes"].values())
+        stray = len(d.get("unattached", []))
         lines.append(f"- **Classes:** {len(d['classes'])}   "
-                     f"**Attributes:** {attrs}   "
+                     f"**Attributes:** {attrs + stray}"
+                     + (f" ({stray} unattached)" if stray else "") + "   "
                      f"**Relationships:** {len(d['edges'])}")
     lines += [f"- **Source:** {source}", "",
               "Generated from the view page's SVG geometry: message order from "
