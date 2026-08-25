@@ -1,0 +1,82 @@
+name: Validate — BIAN APIs v14
+
+# EXTRACTION validation only. Answers one question: can we still reach the
+# BIAN API repository and pull the expected content out of it?
+#
+# References NO Google Drive secrets, so a red run here always means a SOURCE
+# problem, never a publishing one. Use "Check publishing target" for the Drive
+# half.
+#
+# Unlike the landscape, acquisition is a single request for a 57 MB zipball, so
+# there is no cheap semantic-only half — this validates the whole source.
+#
+# Run this when:
+#   - onboarding or changing this source
+#   - BIAN publishes a new release
+#   - the scheduled harvest went red and you need to know which half broke
+#
+# Reports counts and pass/fail only, never acquired text: Actions logs on a
+# public repo are world-readable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      strict:
+        description: Fail on warnings as well as errors
+        type: boolean
+        default: false
+      timeout:
+        description: Per-endpoint probe timeout (seconds)
+        type: string
+        default: "45"
+  schedule:
+    - cron: "0 4 * * 1"        # an hour before the harvest, as an early warning
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-bian-apis-v14
+  cancel-in-progress: true
+
+env:
+  SOURCE_ID: bian-apis-v14
+
+jobs:
+  validate:
+    name: Can we extract BIAN API content?
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Pinned and hash-checked, like rclone and plantuml.jar. --require-hashes
+      # refuses any unpinned transitive dependency, so this cannot quietly grow.
+      - name: Install YAML parser (pinned, hash verified)
+        run: python3 -m pip install --require-hashes -r requirements.txt
+
+      - name: Validate extraction
+        run: |
+          python3 run.py validate "$SOURCE_ID" \
+            --timeout "${{ inputs.timeout || '45' }}" \
+            ${{ inputs.strict && '--strict' || '' }}
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "::error title=BIAN API extraction failed::Read the DIAGNOSIS block above."
+          echo "The failing STAGE tells you where to look:"
+          echo "  Connectivity — GitHub unreachable, or the release path moved"
+          echo "  Payload      — reachable but returning the wrong thing"
+          echo "  Parse        — YAML shape changed; fix sources/bian-apis-v14/source.py"
+          echo "  Extract      — parsed, but wrong items selected"
+          echo "  Render       — a bug in this repo's markdown generation"
+          echo ""
+          echo "One cause is specific to this source: the semantic OAS3 path"
+          echo "ends in a TRAILING SPACE ('oas3 /yamls'), and the ISO 20022 path"
+          echo "does not. If BIAN tidies that up, the semantic probe fails while"
+          echo "the ISO probe passes — and operation count collapses."
+          echo ""
+          echo "This workflow never touches Google Drive, so publishing is not the cause."

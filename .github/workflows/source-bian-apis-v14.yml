@@ -1,0 +1,100 @@
+name: Source — BIAN APIs v14
+
+# Harvest the BIAN Semantic APIs and publish them to Drive.
+#
+# Two stages, in order, and the second is only reached if the first verified:
+#
+#   1. extract   one request for the repository zipball, parse 258 domains,
+#                render, then run the source's own checks
+#   2. publish   rclone sync to gdrive:content/bian-apis-v14/ only
+#
+# There is no chunked pipeline here and there should not be one. The landscape
+# needs ~1,280 requests and so must be split; this needs exactly one, so a
+# failure costs a single retry and there is nothing to gate between chunks.
+#
+# Scheduled at 05:00 Monday — deliberately clear of Landscape BIAN v14 at
+# 03:00. Independent workflows, one shared Drive account.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to Drive after a successful harvest
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-bian-apis-v14      # per source: never blocks another harvest
+  cancel-in-progress: false
+
+env:
+  # NOT named RCLONE_VERSION: rclone maps RCLONE_<FLAG> env vars onto its own
+  # flags, so RCLONE_VERSION is read as --version and every call dies.
+  RC_VERSION: "1.71.1"
+  SOURCE_ID: bian-apis-v14
+
+jobs:
+  harvest:
+    name: Harvest and publish BIAN APIs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install YAML parser (pinned, hash verified)
+        run: python3 -m pip install --require-hashes -r requirements.txt
+
+      # STAGE 1 — extraction. No Drive credentials are in scope here, so a
+      # failure in this step is unambiguously a source problem.
+      - name: Validate and harvest
+        run: python3 run.py validate "$SOURCE_ID"
+
+      - name: Explain an extraction failure
+        if: failure()
+        run: |
+          echo "::error title=EXTRACTION failed::Nothing was published."
+          echo "Read the failing STAGE above. If the operation count collapsed,"
+          echo "check the trailing space in the semantic OAS3 path first."
+
+      - name: Install rclone (pinned, checksum verified)
+        if: github.event_name == 'schedule' || inputs.publish
+        run: |
+          set -euo pipefail
+          base="https://github.com/rclone/rclone/releases/download/v${RC_VERSION}"
+          pkg="rclone-v${RC_VERSION}-linux-amd64.zip"
+          curl -fsSLO "${base}/${pkg}"
+          curl -fsSLO "${base}/SHA256SUMS"
+          grep " ${pkg}\$" SHA256SUMS | sha256sum -c -
+          unzip -q "${pkg}"
+          sudo install -m 755 "rclone-v${RC_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          rm -rf "${pkg}" SHA256SUMS "rclone-v${RC_VERSION}-linux-amd64"
+
+      # STAGE 2 — publishing. Only reached once extraction verified, so a
+      # failure here is always a Drive problem.
+      - name: Publish to Drive
+        id: publish
+        if: github.event_name == 'schedule' || inputs.publish
+        env:
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python3 run.py publish "$SOURCE_ID"
+
+      - name: Explain a publishing failure
+        if: failure() && steps.publish.outcome == 'failure'
+        run: |
+          echo "::error title=PUBLISHING failed::The harvest succeeded; the Drive sync did not."
+          echo "This is not a source problem. Run 'Check publishing target (Google Drive)'."
+          echo "Common causes: expired GDRIVE_TOKEN, revoked OAuth grant, Drive quota."
+          echo ""
+          echo "After the first successful publish, run 'Reindex published sources'"
+          echo "so this source appears in the top-level content index."
