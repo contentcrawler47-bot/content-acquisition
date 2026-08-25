@@ -10,7 +10,12 @@ name: Reindex published sources
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 4 * * 1"       # after the source runs have finished
+    - cron: "0 7 * * 1"        # LAST of the Monday schedule, deliberately
+# Every source must have finished before this runs, or the index records a
+# stale last-acquired date for whichever source publishes afterwards and keeps
+# it for a week. Monday order: 02:00 and 04:00 validate, 03:00 landscape,
+# 05:00 APIs, 06:00 join, 07:00 this. ADDING A SOURCE MEANS CHECKING THIS TIME
+# IS STILL LAST.
 
 permissions:
   contents: read

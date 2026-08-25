@@ -104,7 +104,11 @@ Each failure prints what was observed, what it probably means, and what to
 check. Sources declare their endpoints in `probes()`, which is what makes
 onboarding a new source verifiable rather than hopeful.
 
-Python standard library only. No dependencies to install.
+Python standard library only, with one exception: `sources/bian-apis-v14`
+reads YAML, which the standard library cannot parse. `requirements.txt` pins
+that parser to a version and its hashes, installed with `--require-hashes` so
+no unpinned transitive dependency can appear. Only that source's two workflows
+install it; every other workflow runs on the standard library alone.
 
 ## How sources stay independent
 

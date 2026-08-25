@@ -61,6 +61,9 @@ class Source(BaseSource):
     # releases and a canary borrowed from 14 may not resolve.
     repo = "bian-official/public"
     release = "release14.0.0"
+    # The directory name is not a version string. Rendering `release` into
+    # prose produced "BIAN release14.0.0" in the published index.
+    release_label = "14.0.0"
     zip_url = "https://codeload.github.com/bian-official/public/zip/refs/heads/main"
     raw_base = "https://raw.githubusercontent.com/bian-official/public/main"
 
@@ -171,7 +174,8 @@ class Source(BaseSource):
             outdir, self.id, self.name, items,
             per_file=60,
             extra_index_lines=[
-                f"BIAN {self.release}, {len(items)} service domain APIs.",
+                f"BIAN release {self.release_label}, {len(items)} service "
+                f"domain APIs.",
                 "",
                 "Operations come from the semantic OpenAPI set. The ISO 20022 "
                 "set describes the same operations at the same paths, so it "

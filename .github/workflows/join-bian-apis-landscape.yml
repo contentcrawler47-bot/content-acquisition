@@ -1,0 +1,86 @@
+name: Join — BIAN APIs to landscape
+
+# Measures how the 258 API service domains join to the landscape's 367.
+#
+# Neither source can answer this alone: a source never imports another source,
+# and making the APIs source fetch the landscape would turn a one-request
+# harvest into a forty-eight-request one. So both bundles are produced here,
+# side by side, and a tool compares their manifests.
+#
+# Both halves are cheap. The landscape's SEMANTIC half is what
+# "Validate — BIAN v14" already runs in about two minutes, and that half is
+# where service domains live; the diagrams are irrelevant to a name join. The
+# APIs source is a single request.
+#
+# References NO Google Drive secrets and publishes nothing. This reports a
+# number; it does not change what is published.
+#
+# The join rate is the figure to watch over time. A sudden drop means a naming
+# change on one side, not a content change — and it would otherwise show up as
+# two bundles that quietly stopped referring to the same things.
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_rate:
+        description: Fail if fewer than this percentage of APIs match
+        type: string
+        default: "90"
+      list_all:
+        description: List every unmatched name, not just the first 15
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 6 * * 1"        # after both sources have refreshed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: join-bian-apis-landscape
+  cancel-in-progress: true
+
+jobs:
+  join:
+    name: Measure the APIs to landscape join
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install YAML parser (pinned, hash verified)
+        run: python3 -m pip install --require-hashes -r requirements.txt
+
+      # The semantic half only. It is marked incomplete and cannot publish,
+      # which is exactly what is wanted here — this workflow must not be able
+      # to write anything to Drive.
+      - name: Harvest the landscape (semantic half)
+        run: python3 run.py validate bian-v14
+
+      - name: Harvest the APIs
+        run: python3 run.py validate bian-apis-v14
+
+      - name: Report the join
+        run: |
+          python3 tools/join_report.py out/bian-v14 out/bian-apis-v14 \
+            --min-rate "${{ inputs.min_rate || '90' }}" \
+            ${{ inputs.list_all && '--list' || '' }}
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "::error title=JOIN below threshold or a harvest failed::Nothing was published; this workflow cannot publish."
+          echo ""
+          echo "If a HARVEST failed, the cause is in that source — run its own"
+          echo "Validate workflow to see the staged diagnosis."
+          echo ""
+          echo "If the JOIN RATE dropped, the two bundles have stopped agreeing"
+          echo "on names. Check the unmatched list above: a handful of renames"
+          echo "upstream is normal drift, a collapse means one side changed how"
+          echo "it names service domains."
+          echo ""
+          echo "Names are compared with case and punctuation removed, so"
+          echo "'Consumer Loan' and 'ConsumerLoan' already match. A failure is"
+          echo "a real difference, not a formatting one."
