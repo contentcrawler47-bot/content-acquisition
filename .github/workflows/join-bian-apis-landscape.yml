@@ -25,7 +25,11 @@ on:
       min_rate:
         description: Fail if fewer than this percentage of APIs match
         type: string
-        default: "90"
+        # Measured 26 August 2026: 257 of 258 match, 99.6%. The only
+        # unmatched API is PartyReferenceDataDirectory. 99 tolerates one
+        # further rename before tripping; it was 90 for the first
+        # measurement, which would have let 23 domains drift away unnoticed.
+        default: "99"
       list_all:
         description: List every unmatched name, not just the first 15
         type: boolean
@@ -65,7 +69,7 @@ jobs:
       - name: Report the join
         run: |
           python3 tools/join_report.py out/bian-v14 out/bian-apis-v14 \
-            --min-rate "${{ inputs.min_rate || '90' }}" \
+            --min-rate "${{ inputs.min_rate || '99' }}" \
             ${{ inputs.list_all && '--list' || '' }}
 
       - name: Explain a failure

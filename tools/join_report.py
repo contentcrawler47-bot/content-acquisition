@@ -90,11 +90,17 @@ def main() -> int:
     apis = load_manifest(args.apis)
     categories = service_domain_categories(land)
 
-    domains = {
-        item.get("name", ""): item_id
+    domain_items = [
+        (item_id, item.get("name", ""))
         for item_id, item in (land.get("items") or {}).items()
         if item.get("category") in categories
-    }
+    ]
+    # Keyed by name for lookup, which COLLAPSES duplicates: the landscape
+    # carries several service domains sharing a name. Both counts are
+    # reported below rather than letting the collapse pass as the domain
+    # count, which is what an earlier version did.
+    domains = {name: item_id for item_id, name in domain_items}
+    unnamed = sum(1 for _i, n in domain_items if not n)
     by_norm = {norm(n): n for n in domains if n}
 
     matched, unmatched = [], []
@@ -118,14 +124,18 @@ def main() -> int:
     print(f"  apis bundle      : {args.apis}")
     print(f"  apis source      : {apis.get('source')}")
     print()
-    print(f"  landscape service domains : {len(domains)}")
+    print(f"  landscape domain objects  : {len(domain_items)}")
+    print(f"  distinct domain names     : {len(domains)}"
+          + (f"  ({len(domain_items) - len(domains)} share a name"
+             + (f", {unnamed} unnamed" if unnamed else "") + ")"
+             if len(domain_items) != len(domains) else ""))
     print(f"  from categories           : {', '.join(categories)}")
     print(f"  api service domains       : {total}")
     print()
     print(f"  matched      {len(matched):>4}  ({rate:.1f}% of APIs)")
     print(f"  unmatched    {len(unmatched):>4}")
     print(f"  no API       {len(no_api):>4}  "
-          f"(landscape domains this release exposes no API for)")
+          f"(landscape domain names this release exposes no API for)")
     print()
 
     if unmatched:
