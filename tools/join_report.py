@@ -54,20 +54,26 @@ def load_manifest(bundle: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def service_domain_category(manifest: dict) -> str:
-    """Find the landscape category holding service domains.
+def service_domain_categories(manifest: dict) -> list[str]:
+    """Find every landscape category holding service domains.
 
-    Guessing the exact string and hard-coding it is how a silent mismatch
-    starts, so it is discovered and the alternatives are printed on failure.
+    Compared with `norm`, the SAME normaliser used for item names, because the
+    landscape spells this category BOTH ways: `ServiceDomain` (367 objects)
+    and `Service Domain` (2). An earlier version tested for the substring
+    "service domain" in the lowercased name, which cannot match the unspaced
+    form and silently locked onto the 2-object stray — a 0% join that looked
+    like catastrophic naming drift and was really a bug here.
+
+    Returns every matching category, so neither spelling is dropped.
     """
     categories = manifest.get("categories") or {}
-    for name in categories:
-        if "service domain" in name.lower():
-            return name
-    sys.exit(
-        "  could not find a service domain category in the landscape "
-        "bundle.\n  categories present: "
-        + ", ".join(sorted(categories)) or "(none)")
+    hits = sorted(n for n in categories if norm(n) == "servicedomain")
+    if not hits:
+        listed = ", ".join(sorted(categories)) if categories else "(none)"
+        sys.exit(
+            "  no service domain category in the landscape bundle.\n"
+            f"  categories present: {listed}")
+    return hits
 
 
 def main() -> int:
@@ -82,12 +88,12 @@ def main() -> int:
 
     land = load_manifest(args.landscape)
     apis = load_manifest(args.apis)
-    category = service_domain_category(land)
+    categories = service_domain_categories(land)
 
     domains = {
         item.get("name", ""): item_id
         for item_id, item in (land.get("items") or {}).items()
-        if item.get("category") == category
+        if item.get("category") in categories
     }
     by_norm = {norm(n): n for n in domains if n}
 
@@ -113,6 +119,7 @@ def main() -> int:
     print(f"  apis source      : {apis.get('source')}")
     print()
     print(f"  landscape service domains : {len(domains)}")
+    print(f"  from categories           : {', '.join(categories)}")
     print(f"  api service domains       : {total}")
     print()
     print(f"  matched      {len(matched):>4}  ({rate:.1f}% of APIs)")
