@@ -1,0 +1,108 @@
+name: Package skills
+
+# Builds the upload archives for every skill under skills/, from the repo at
+# its verified state.
+#
+# The archives are a FUNCTION OF THE REPO DIGEST: the same digest produces the
+# same bytes every time, so a lost or partial install is repaired by running
+# this again and re-uploading. Nobody assembles an archive by hand, which is
+# what makes the structure reliably correct — the upload requires the skill
+# folder to be the archive root, and zipping the folder's contents instead is
+# the mistake that is easy to make and hard to see.
+#
+# References no secrets. Writes nothing to the repo.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-skills
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Build skill archives
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Refuse to package an unverified tree. An archive built from a repo
+      # that does not match its manifest would install content nobody has
+      # checked, and the digest printed below would not describe it.
+      - name: Verify against MANIFEST.sha256
+        run: python3 tools/repo_manifest.py --verify
+
+      - name: Repo fingerprint
+        run: python3 tools/repo_manifest.py --print
+
+      - name: Build one archive per skill
+        run: |
+          set -euo pipefail
+          if [ ! -d skills ]; then
+            echo "::error title=No skills directory::skills/ does not exist."
+            exit 1
+          fi
+          mkdir -p dist
+          found=0
+          for dir in skills/*/; do
+            name="$(basename "$dir")"
+            if [ ! -f "$dir/SKILL.md" ]; then
+              echo "::error title=Malformed skill::$dir has no SKILL.md"
+              exit 1
+            fi
+            found=1
+            # Zip from inside skills/ so the skill folder is the archive root,
+            # which is the structure the upload requires.
+            ( cd skills && zip -r -q -X "../dist/$name.zip" "$name" )
+            echo "  built dist/$name.zip"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error title=No skills found::skills/ contains no skill folders."
+            exit 1
+          fi
+
+      # Printed so the archive that was downloaded can be checked against the
+      # file that ends up installed. The marker is a claim the file makes about
+      # itself; the hash is the thing to compare.
+      - name: Versions and hashes
+        run: |
+          set -euo pipefail
+          echo "Repo digest:"
+          python3 tools/repo_manifest.py --print | grep -i digest || true
+          echo
+          for dir in skills/*/; do
+            name="$(basename "$dir")"
+            marker="$(grep -m1 -o '<!--[[:space:]]*skill:[^>]*-->' \
+              "$dir/SKILL.md" || echo '(no marker)')"
+            echo "$name"
+            echo "  marker      $marker"
+            echo "  SKILL.md    $(sha256sum "$dir/SKILL.md" | cut -d' ' -f1)"
+            for ref in "$dir"references/*; do
+              [ -e "$ref" ] || continue
+              echo "  $(basename "$ref")  $(sha256sum "$ref" | cut -d' ' -f1)"
+            done
+          done
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: How to install
+        run: |
+          echo "Download the 'skills' artifact from this run and unzip it."
+          echo "It contains one archive per skill, each already in the shape"
+          echo "the upload expects — the skill folder as the archive root."
+          echo
+          echo "Install each in Customize > Skills. Do not edit an installed"
+          echo "skill in place: that produces bytes matching no released"
+          echo "version, invisible to this repo and unverifiable."
