@@ -6,29 +6,51 @@ read it across sessions and devices.
 
 ```
 run.py                     entry point
+requirements.txt           one pinned, hash-checked dependency (see below)
 core/
   source.py                the contract every source implements
   render.py                shared markdown/manifest generation
   checks.py                generic validation + report runner
+  diagnostics.py           connectivity probing with error classification
   publish.py               uniform, per-source-scoped Drive sync
   cli.py                   source discovery and commands
 sources/
   _template/               copy this to add a source
   bian-v14/                BIAN Service Landscape v14 — pinned URL, thresholds
+  bian-apis-v14/           BIAN Semantic APIs v14 — the release archive
 bianlib/                   BIAN extraction, shared across landscape versions
   fetch.py                 paced, backing-off, cache-aware HTTP
   landscape.py             the data model: shards, relations, views
   views.py                 view-page SVG geometry -> PlantUML
   plan.py                  view classification, chunking, verification
   pipeline.py              plan -> chunk -> assemble
+  source.py                the BianSource base class
 tools/
   landscape.py             the chunked full-landscape harvest
+  join_report.py           joins two finished bundles by item name
   check_plantuml.py        hands every diagram to PlantUML to verify it renders
-.github/workflows/
-  landscape-bian-v14.yml   full landscape, in verified chunks
-  validate-bian.yml        can we still extract? (cheap, weekly)
-  reindex.yml              rebuilds the top-level Drive index
+  repo_manifest.py         manifest generation and verification
+  apply_changeset.py       applies a revision zip, verifying before commit
+  diagnose_bian.py         connectivity and shape diagnostics
+  view_to_plantuml.py      single-view conversion, for investigation
+  publish_sample.py        the original small end-to-end proof
+  probe_*.py               one-off investigations, kept as evidence
+docs/ADDING_A_SOURCE.md
+changesets/                upload target for revision zips
+.github/workflows/         fifteen; six scheduled — see The scheduled week
 ```
+
+## Sources
+
+| Source id | What | Items | Drive folder |
+|---|---|---|---|
+| `bian-v14` | BIAN Service Landscape v14 | 12,521 | `content/bian-v14/` |
+| `bian-apis-v14` | BIAN Semantic APIs v14 | 258 | `content/bian-apis-v14/` |
+
+The two are measurably related: `tools/join_report.py` resolves API service
+domains to landscape service domains and reports the rate. It is **99.6%** —
+257 of 258 — which is the number that says the two bundles refer to the same
+things.
 
 ## Harvesting a whole landscape
 
@@ -71,7 +93,35 @@ python3 run.py harvest <source>          acquire -> out/<source>/
 python3 run.py publish <source>          sync to gdrive:content/<source>/
 python3 run.py run <source> --publish    validate then publish
 python3 run.py reindex                   rebuild content/index.md
+
+python3 tools/join_report.py out/bian-v14 out/bian-apis-v14 --min-rate 99
+python3 tools/repo_manifest.py --verify
 ```
+
+## The scheduled week
+
+Everything runs on Monday, and **the order is load-bearing**.
+
+| UTC | Workflow | Secrets |
+|---|---|---|
+| 02:00 | Validate — BIAN v14 | none |
+| 03:00 | Landscape — BIAN v14 (full, chunked) | `GDRIVE_*` |
+| 04:00 | Validate — BIAN APIs v14 | none |
+| 05:00 | Source — BIAN APIs v14 | `GDRIVE_*` |
+| 06:00 | Join — BIAN APIs to landscape | none |
+| **07:00** | **Reindex published sources — last** | `GDRIVE_*` |
+
+Each source is validated before it is harvested, the join runs once both
+bundles exist, and reindex runs last so `content/index.md` records the dates
+of the runs that just happened. Reindex was once at 04:30 and a source was
+added after it, which would have written a week-stale date every week.
+**Adding or rescheduling a source means checking reindex is still last.**
+
+The remaining workflows are on-demand: **Verify repo contents**, **Apply
+changeset**, **Check publishing target (Google Drive)**, **Publish sample to
+Drive**, **Sample — Savings Account diagrams**, and four one-off
+investigations (**Investigate — BIAN coverage gap**, three **Probe —**
+workflows) kept as evidence for the findings they produced.
 
 ## Extraction and publishing are separate
 
@@ -129,6 +179,10 @@ cannot wipe the published copy.
 It also refuses a bundle whose manifest says `"complete": false`. A source that
 harvests in stages can produce a real-looking partial bundle; syncing that over
 a full one would silently delete the difference.
+
+A question *about two sources* belongs in neither of them.
+`tools/join_report.py` works from the two finished `manifest.json` files, with
+no network access and no code from either side.
 
 ## Adding a source
 
