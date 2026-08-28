@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v1 | repo: changeset 022 -->
+<!-- skill: bian-extraction v2 | repo: changeset 025 -->
 
 # BIAN Service Landscape extraction
 

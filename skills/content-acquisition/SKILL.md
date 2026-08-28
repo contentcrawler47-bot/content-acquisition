@@ -3,7 +3,7 @@ name: content-acquisition
 description: Operate the content-acquisition project — a GitHub Actions and Google Drive pipeline that harvests reference content from external sources, renders it to markdown and PlantUML, and publishes it privately for Claude to read. Use this skill whenever the user mentions content-acquisition, changesets, the harvest or publish workflows, adding a content source, repo digests or MANIFEST.sha256, or asks to change anything in that repo. Also use it when they mention BIAN together with harvesting, publishing or automation, or when a GitHub Actions log from this project is shared. Critically, changes to this repo must be delivered as verified changeset zips, never as loose files to paste — so consult this skill before proposing any modification to it.
 ---
 
-<!-- skill: content-acquisition v1 | repo: changeset 022 -->
+<!-- skill: content-acquisition v2 | repo: changeset 025 -->
 
 # content-acquisition
 
@@ -22,6 +22,15 @@ attached even when it does not look like it, and belongs on Drive.
 So this skill does not restate the repo's structure, commands or workflows.
 Those are in the repo, which you can read directly. **Read the artefact rather
 than recalling it**, and rather than trusting a description of it.
+
+**A constant the repo defines is a measurement too.** A category set, a
+threshold, a schema, a path — restating one here creates a copy that drifts,
+and the drift is invisible because both look authoritative. Name the file and
+the symbol instead. Any tool needing it **imports it**: a tool that
+re-declares a constant the pipeline owns will eventually disagree with the
+pipeline and be believed. This skill shipped a six-category-short copy of the
+landscape allowlist, and the next tool written from it reported a wrong total
+that nothing else contradicted.
 
 ## Getting the current state
 
@@ -158,6 +167,12 @@ documents in this repo — it is public and they are deliberately not.
 - **Do not build the fixture from the same belief as the code.** A synthetic
   fixture written alongside the code tests the assumption twice instead of once
   against reality. Build fixtures from observed data.
+- **A second copy is a second thing to keep right**, and the one nobody reads
+  is the one that rots. Learned three times here: duplicated changeset history
+  that went three changesets stale, a duplicated extraction reference that
+  drifted unread across three snapshots, and a duplicated category allowlist
+  that silently changed a published count. Before writing something down,
+  check whether it already exists somewhere that is checked.
 
 ## When citing a constraint, cite where it was decided
 

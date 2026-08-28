@@ -115,18 +115,20 @@ Only a minority of objects have any relations at all. Attribute ownership is
 ## Allowlist
 
 Wanted categories, rather than an exclusion list — well over a hundred
-categories exist and new ones appear between versions:
+categories exist and new ones appear between versions.
 
-```
-ServiceDomain, ServiceOperation, ServiceOperationType, ServiceGroup,
-SDServiceGroup, BusinessService, ControlRecord, AssetType, AnalyticsObject,
-Business object, BehaviorQualifier, BehaviorQualifierType,
-ReferenceInformation, BusinessArea, BusinessDomain, FunctionalPattern,
-Capability, Grouping, GenericArtifact, ActionTerm
-```
+**The list itself is `INCLUDE_CATEGORIES` in `bianlib/landscape.py`, and the
+filter is `is_wanted()`, which also drops anything whose category or name ends
+in " relation". Read them there, and import them rather than copying them.**
 
-Add `Business function` and `Work package` if ArchiMate views are ever
-rendered.
+A transcription of that list used to sit here. It was six categories short —
+including `Service Domain`, the spaced spelling the paragraph below warns
+about — and a tool built from it under-reported the wanted-object count while
+looking entirely self-consistent. A constant the pipeline defines is a
+measurement: name where it lives, never restate it.
+
+`Business function` and `Work package` are deliberately absent and would be
+added if ArchiMate views are ever rendered.
 
 **Normalise before matching, and union every match.** The service domain
 category is spelled both with and without a space, and a substring test finds
