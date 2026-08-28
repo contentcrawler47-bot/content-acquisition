@@ -1,0 +1,45 @@
+name: Census — BIAN landscape counts
+
+# Produces the landscape's headline counts with their denominators stated, so
+# REFERENCE-DATA.md can be updated from a measurement rather than from memory.
+#
+# Supersedes "Investigate — BIAN coverage gap", which tested two hypotheses
+# that were both resolved on 22 August 2026 and which counted the service
+# domain category by literal match — the 018 bug it was written to diagnose.
+#
+# Read-only. No credentials, no secrets, publishes nothing. About 48 requests
+# paced at a second, gzip-encoded, roughly 12 MB.
+#
+# The counts are printed to the log and uploaded as JSON. They are
+# MEASUREMENTS: record them in REFERENCE-DATA.md on Drive, never in a skill.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: census-bian
+  cancel-in-progress: true
+
+jobs:
+  census:
+    name: Count objects, service domains and relations
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Run the census
+        run: python3 tools/landscape_census.py --json census.json
+
+      - name: Upload the counts
+        uses: actions/upload-artifact@v4
+        with:
+          name: landscape-census
+          path: census.json
+          if-no-files-found: error
+          retention-days: 30

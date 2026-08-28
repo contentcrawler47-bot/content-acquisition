@@ -51,7 +51,8 @@ the map, not the inventory.
 | `tools/check_plantuml.py` | Hands every diagram to PlantUML |
 | `tools/repo_manifest.py` | Manifest generation and verification |
 | `tools/apply_changeset.py` | Applies a revision zip, verifying before commit |
-| `tools/diagnose_bian.py`, `tools/view_to_plantuml.py`, `tools/publish_sample.py`, `tools/probe_*.py` | Diagnostics and one-off investigations |
+| `tools/landscape_census.py` | Landscape counts, each with its denominator |
+| `tools/view_to_plantuml.py`, `tools/publish_sample.py`, `tools/probe_*.py` | Diagnostics and one-off investigations |
 | `core/__init__.py`, `sources/__init__.py`, `sources/*/__init__.py`, `bianlib/__init__.py` | Empty package markers — required |
 | `.github/workflows/` | Fifteen workflows; see **The scheduled week** in the README |
 | `MANIFEST.sha256` | The shipped state, checked by **Verify repo contents** |

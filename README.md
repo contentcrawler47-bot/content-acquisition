@@ -31,7 +31,7 @@ tools/
   check_plantuml.py        hands every diagram to PlantUML to verify it renders
   repo_manifest.py         manifest generation and verification
   apply_changeset.py       applies a revision zip, verifying before commit
-  diagnose_bian.py         connectivity and shape diagnostics
+  landscape_census.py      landscape counts, with denominators stated
   view_to_plantuml.py      single-view conversion, for investigation
   publish_sample.py        the original small end-to-end proof
   probe_*.py               one-off investigations, kept as evidence
