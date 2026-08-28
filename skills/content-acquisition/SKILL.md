@@ -3,7 +3,7 @@ name: content-acquisition
 description: Operate the content-acquisition project — a GitHub Actions and Google Drive pipeline that harvests reference content from external sources, renders it to markdown and PlantUML, and publishes it privately for Claude to read. Use this skill whenever the user mentions content-acquisition, changesets, the harvest or publish workflows, adding a content source, repo digests or MANIFEST.sha256, or asks to change anything in that repo. Also use it when they mention BIAN together with harvesting, publishing or automation, or when a GitHub Actions log from this project is shared. Critically, changes to this repo must be delivered as verified changeset zips, never as loose files to paste — so consult this skill before proposing any modification to it.
 ---
 
-<!-- skill: content-acquisition v2 | repo: changeset 025 -->
+<!-- skill: content-acquisition v3 | repo: changeset 028 -->
 
 # content-acquisition
 
@@ -164,6 +164,18 @@ documents in this repo — it is public and they are deliberately not.
 - **Anything keyed by name collapses duplicates**, silently. Report objects and
   distinct names separately.
 - **Measure the whole set, not a sample.** Ask what the sample did not contain.
+- **Code that swallows its own failures is not evidence that it works.** A
+  helper built a URL that had never once returned a response; it sat off the
+  bulk path behind a bare `except` that returned an empty string, so a wrong
+  path and a legitimately absent value were the same output. The wrong path
+  was then copied into a skill and repeated for three versions. Before quoting
+  a path, a field or an endpoint as known, find the run that exercised it — and
+  when writing the fallback, log what failed rather than returning the quiet
+  default.
+- **A zero from a failed measurement is not a measurement.** A probe reported
+  "viewpoints declared: 0" and drew a conclusion from it while every one of its
+  thirty fetches had failed. State the denominator as attempts that *succeeded*,
+  and say NOT MEASURED when none did.
 - **Do not build the fixture from the same belief as the code.** A synthetic
   fixture written alongside the code tests the assumption twice instead of once
   against reality. Build fixtures from observed data.

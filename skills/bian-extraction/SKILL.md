@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v2 | repo: changeset 025 -->
+<!-- skill: bian-extraction v3 | repo: changeset 028 -->
 
 # BIAN Service Landscape extraction
 
@@ -25,15 +25,30 @@ version lives in the source that uses it.
 https://bian.org/servicelandscape-<version>/
 ├── object_16.html?object=NNNNN   JS-rendered — DO NOT fetch, returns an empty shell
 ├── views/view_NNNNN.html         STATIC — inline SVG with full diagram geometry
-├── views/view_NNNNN_data.js      the view's name — rarely needed, see Titles
 └── data/
     ├── all_objects_data_mapping.js  objectDataMapping = {objectId: shardNumber}
     ├── all_objects_data_N.js        objectData = {objectId: {...}}, many shards
     ├── all_objects_relations.js     objectRelations = {objectId: [{via, to:[ids]}]}
     ├── all_objects_on_views.js      objectsOnViews = {objectId: [viewIds]}
     │                                insiteViews    = {viewId: {name, ...}}
+    ├── models_data.js               insite_models = [{name, views:[{id, title}]}]
+    ├── view_NNNNN_data.js           one view: typeIconPath, objectReferences,
+    │                                viewpointsData, vp_legends
     └── config_data.js               languages
 ```
+
+**Everything but the view pages is under `data/`, including the per-view file.**
+This file said `views/view_NNNNN_data.js` for three versions — it is loaded by a
+page in `views/`, so the sibling path looks right — and the one function that
+built that URL sits off the bulk path behind a bare `except`, so it never
+returned anything but an empty string and no run ever disagreed. **A path no
+request has ever succeeded on is a guess, however many places repeat it.**
+
+`models_data.js` groups most views into named models, and the model name is the
+nearest thing the landscape publishes to a statement of what a view is *for* —
+`insiteViews` gives a view a name but never a purpose. The views it omits appear
+to be exactly those that are not objects in the model, which is worth
+re-checking rather than assuming. Counts are in `REFERENCE-DATA.md`.
 
 **Two independent sources, and this distinction matters more than anything
 else here:**

@@ -94,7 +94,7 @@ Sequence diagrams carry a title in `UML_Interaction`'s label. **Class diagrams
 do not.**
 
 Take the name from `insiteViews[viewId].name`, which is already downloaded.
-`views/view_<id>_data.js` holds the same name but costs a second request per
+`data/view_<id>_data.js` holds the same name but costs a second request per
 class diagram — hundreds of avoidable requests. Falling back to a literal makes
 every untitled class diagram share a filename and silently overwrite the
 others.

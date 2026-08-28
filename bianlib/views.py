@@ -144,10 +144,21 @@ def diagram_title(bs: dict, svg: str) -> str:
 def title_from_view_data(source: str, svg: str, base: str = "",
                          fetcher=None) -> str:
     """Class diagrams carry no UML_Interaction, so their name is not in the
-    SVG. It lives in the sibling views/view_<id>_data.js as objectData.
+    SVG. It lives in data/view_<id>_data.js as objectData.
 
     That is a second request per class diagram — 802 of them — so the bulk
     pipeline passes the name in from insiteViews instead and never gets here.
+
+    The path was `views/view_<id>_data.js` until changeset 028, matching the
+    view page's own directory and the skill's orientation map. It is wrong:
+    the file sits under `data/`, alongside the other shared data files.
+    Measured 28 August 2026 — 30 of 30 sampled views answered on `data/` and
+    0 of 30 on `views/`.
+
+    Nothing caught it because nothing ran it. This function is off the bulk
+    path, and its one caller sat behind a bare `except Exception: return ""`,
+    so a wrong URL and a genuinely nameless diagram were indistinguishable.
+    The failure is now reported rather than swallowed.
     """
     m = re.search(r'<svg version=[^>]*?bizzid="(\d+)"', svg)
     if not m:
@@ -155,7 +166,7 @@ def title_from_view_data(source: str, svg: str, base: str = "",
     vid = m.group(1)
     if source.startswith("http"):
         root = base or source.rsplit("/views/", 1)[0]
-        cand = f"{root}/views/view_{vid}_data.js"
+        cand = f"{root}/data/view_{vid}_data.js"
     else:
         parent = Path(source).parent
         hits = list(parent.rglob(f"view_{vid}_data*.js"))
@@ -165,7 +176,9 @@ def title_from_view_data(source: str, svg: str, base: str = "",
     try:
         txt = fetcher.get(cand).text if (fetcher and cand.startswith("http")) \
             else fetch(cand)
-    except Exception:
+    except Exception as e:                                  # noqa: BLE001
+        print(f"    view data unavailable for {vid}: "
+              f"{type(e).__name__} on {cand}", flush=True)
         return ""
     m = re.search(r'"name"\s*:\s*"([^"]+)"', txt)
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""

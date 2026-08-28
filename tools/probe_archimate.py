@@ -38,11 +38,11 @@ StrategyCapabilityStrategyCapabilityTriggering. No UML_ prefix anywhere, so
 view_to_plantuml cannot be extended to these -- they need their own renderer.
 Each sampled view also gets its small per-view data file, which carries
 typeIconPath, viewpointsData and vp_legends -- ArchiMate viewpoints being a
-statement of a view's purpose by the modeller. Its path is NOT established:
-the documented `views/view_<id>_data.js` returned a non-200 for all 30 views
-on the first run, and views.title_from_view_data uses the same path but
-swallows every exception, so nothing has ever confirmed it. The candidates in
-VIEW_DATA_CANDIDATES are tried in order and the winner is reported.
+statement of a view's purpose by the modeller. It is `data/view_<id>_data.js`,
+established 28 August 2026: 30 of 30 sampled views answered there and 0 of 30
+on the documented `views/view_<id>_data.js`. The candidate walk is kept so a
+future landscape version that moves the file reports the move instead of
+reporting nothing, and the winner is printed every run.
 
 Prints counts, categories, concept names and icon paths. Never harvested
 prose: this log is public, so documentation is reported as a length.
@@ -471,16 +471,15 @@ def choose_samples(rows: dict, per_cell: int, extra: str) -> list[str]:
     return picked[:MAX_PAGES]
 
 
-#: Where the per-view data file lives. `views/view_<id>_data.js` is what the
-#: skill's orientation map and views.title_from_view_data both say -- and the
-#: first probe run got a non-200 for all 30 sampled views, so the documented
-#: path is unconfirmed rather than known. title_from_view_data swallows every
-#: exception and returns "", and the bulk pipeline never calls it, so nothing
-#: would have noticed. Try the candidates, lock on to whichever answers, and
-#: say which one it was.
+#: Where the per-view data file lives. Measured, not assumed: `data/` answered
+#: for 30 of 30 sampled views on 28 August 2026 and `views/` for 0 of 30,
+#: despite `views/` being what the skill's orientation map and
+#: views.title_from_view_data said until changeset 028. The known-good path is
+#: first so a normal run costs one request per view; the rest remain so a
+#: version that moves the file names its new home rather than going quiet.
 VIEW_DATA_CANDIDATES = (
-    "views/view_{vid}_data.js",
     "data/view_{vid}_data.js",
+    "views/view_{vid}_data.js",
     "view_{vid}_data.js",
     "data/views/view_{vid}_data.js",
 )
