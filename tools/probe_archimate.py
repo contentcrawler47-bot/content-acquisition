@@ -36,9 +36,13 @@ BusinessEvent, CompositeGrouping, Canvas, ViewGraphic, and connectors named
 <Source><Target><RelationType> such as
 StrategyCapabilityStrategyCapabilityTriggering. No UML_ prefix anywhere, so
 view_to_plantuml cannot be extended to these -- they need their own renderer.
-Each sampled view also gets its small `views/view_<id>_data.js`, which carries
-typeIconPath, viewpointsData and vp_legends: ArchiMate viewpoints are a
-statement of a view's purpose, by the modeller, and cost 2 KB to read.
+Each sampled view also gets its small per-view data file, which carries
+typeIconPath, viewpointsData and vp_legends -- ArchiMate viewpoints being a
+statement of a view's purpose by the modeller. Its path is NOT established:
+the documented `views/view_<id>_data.js` returned a non-200 for all 30 views
+on the first run, and views.title_from_view_data uses the same path but
+swallows every exception, so nothing has ever confirmed it. The candidates in
+VIEW_DATA_CANDIDATES are tried in order and the winner is reported.
 
 Prints counts, categories, concept names and icon paths. Never harvested
 prose: this log is public, so documentation is reported as a length.
@@ -299,7 +303,15 @@ def report_membership(rows: dict, land: Landscape, top: int = 10) -> dict:
 
 
 def report_exclusive(rows: dict, land: Landscape, floor: int = 20) -> list[dict]:
-    """Categories reachable ONLY through views the pipeline never fetches."""
+    """Where each category is placed: convertible views against the rest.
+
+    The first version printed a literal 0 in the "on convertible" column. It
+    was never wrong, because the filter only admitted categories with a zero
+    there -- but a constant formatted as a measurement is precisely the
+    failure this project keeps making. The count is the measured one now, and
+    near-exclusive categories are admitted too, so the column can be non-zero
+    and the reader can see it is being measured.
+    """
     members = land.views_to_members()
     conv, other = Counter(), Counter()
     for vid, oids in members.items():
@@ -307,20 +319,26 @@ def report_exclusive(rows: dict, land: Landscape, floor: int = 20) -> list[dict]
         for oid in oids:
             bucket[land.categories.get(oid, "Other")] += 1
 
-    hdr("B3  Categories reachable only through non-convertible views")
-    print(f"  {'category':<40}{'placements':>12}{'on convertible':>16}  wanted",
-          flush=True)
-    print(f"  {'-' * 72}", flush=True)
+    hdr("B3  Where each category is placed")
+    print("  Categories placed wholly or almost wholly on views the pipeline\n"
+          "  never fetches. 'convertible' counts placements on class and\n"
+          f"  sequence diagrams. Floor: {floor} placements elsewhere, and at\n"
+          "  least 90% of placements off convertible views.\n", flush=True)
+    print(f"  {'category':<38}{'other':>10}{'convertible':>13}"
+          f"{'other share':>13}  wanted", flush=True)
+    print(f"  {'-' * 82}", flush=True)
     out = []
     for cat, n in other.most_common():
-        if conv.get(cat, 0) or n < floor:
+        c = conv.get(cat, 0)
+        if n < floor or n / (n + c) < 0.9:
             continue
         wanted = cat in INCLUDE_CATEGORIES
-        print(f"  {cat[:39]:<40}{n:>12}{0:>16}"
+        print(f"  {cat[:37]:<38}{n:>10}{c:>13}{pct(n, n + c):>13}"
               f"  {'yes' if wanted else 'no'}", flush=True)
-        out.append({"category": cat, "placements": n, "wanted": wanted})
+        out.append({"category": cat, "other": n, "convertible": c,
+                    "other_share": round(n / (n + c), 4), "wanted": wanted})
     if not out:
-        print(f"  (none above the {floor}-placement floor)", flush=True)
+        print(f"  (nothing above the {floor}-placement floor)", flush=True)
     return out
 
 
@@ -419,21 +437,33 @@ def report_example(rows: dict, land: Landscape, vid: str) -> dict:
 # --- Q4: sampled pages ------------------------------------------------------
 
 def choose_samples(rows: dict, per_cell: int, extra: str) -> list[str]:
-    """One exemplar per (model, view type) cell, largest first.
+    """Exemplars per (model, view type) cell, round-robin across cells.
 
     Stratified by cell rather than by view type, because the same view type
-    is used for different purposes in different models and a single exemplar
-    of "Total view" would hide that.
+    serves different purposes in different models.
+
+    Round-robin, and this matters: taking per_cell from each cell in size
+    order and then truncating to MAX_PAGES defeats the stratification it was
+    written for. The first run did exactly that -- --per-cell 10 spent all 30
+    pages on the three largest cells and sampled no Capability map view, no
+    ArchiMate total view, no Ecosystem view and no Business Model Canvas, the
+    view types the probe exists to characterise. Every cell now gets its first
+    exemplar before any cell gets a second.
     """
     cells: dict[tuple, list[str]] = defaultdict(list)
     for vid, r in rows.items():
         if not r["convertible"]:
             cells[(r["model"], r["category"])].append(vid)
 
+    ordered = {cell: sorted(vids, key=lambda v: -rows[v]["members"])
+               for cell, vids in cells.items()}
+    order = sorted(ordered, key=lambda c: -len(ordered[c]))
+
     picked: list[str] = []
-    for cell in sorted(cells, key=lambda c: -len(cells[c])):
-        ordered = sorted(cells[cell], key=lambda v: -rows[v]["members"])
-        picked.extend(ordered[:per_cell])
+    for rank in range(per_cell):
+        for cell in order:
+            if rank < len(ordered[cell]):
+                picked.append(ordered[cell][rank])
     if extra in rows and extra in picked:
         picked.remove(extra)
     if extra in rows:
@@ -441,25 +471,59 @@ def choose_samples(rows: dict, per_cell: int, extra: str) -> list[str]:
     return picked[:MAX_PAGES]
 
 
-def probe_view_data(fetcher: Fetcher, vid: str) -> dict:
-    """The 2 KB `views/view_<id>_data.js`: icon path, viewpoints, legends."""
-    url = f"{fetcher.base}/views/view_{vid}_data.js"
-    resp = fetcher.get(url, conditional=False)
-    if resp.status != 200:
-        return {"error": f"HTTP {resp.status}"}
-    parsed = parse_js_assignments(resp.text)
-    objdata = _d(parsed.get("objectData")).get(str(vid)) or {}
-    entry = _l(_d(objdata).get("data"))
-    first = _d(entry[0]) if entry else {}
-    return {
-        "typeIconPath": _d(objdata).get("typeIconPath") or "",
-        "type": first.get("type") or "",
-        "viewpoints": len(_l(parsed.get("viewpointsData"))),
-        "legends": len(_d(parsed.get("vp_legends"))),
-        "objectReferences": len(_d(parsed.get("objectReferences"))),
-        "viewReferences": len(_d(parsed.get("viewReferences"))),
-        "documentation_chars": sum(len(t) for t in _documentation(first).values()),
-    }
+#: Where the per-view data file lives. `views/view_<id>_data.js` is what the
+#: skill's orientation map and views.title_from_view_data both say -- and the
+#: first probe run got a non-200 for all 30 sampled views, so the documented
+#: path is unconfirmed rather than known. title_from_view_data swallows every
+#: exception and returns "", and the bulk pipeline never calls it, so nothing
+#: would have noticed. Try the candidates, lock on to whichever answers, and
+#: say which one it was.
+VIEW_DATA_CANDIDATES = (
+    "views/view_{vid}_data.js",
+    "data/view_{vid}_data.js",
+    "view_{vid}_data.js",
+    "data/views/view_{vid}_data.js",
+)
+
+
+def probe_view_data(fetcher: Fetcher, vid: str, pattern: str = "") -> dict:
+    """The 2 KB per-view data file: icon path, viewpoints, legends.
+
+    Returns {"error": ...} on failure -- never a silently empty result, and
+    never a zero that could be read as a measurement.
+    """
+    patterns = [pattern] if pattern else list(VIEW_DATA_CANDIDATES)
+    problems = []
+    for candidate in patterns:
+        url = f"{fetcher.base}/{candidate.format(vid=vid)}"
+        try:
+            resp = fetcher.get(url, conditional=False)
+        except Exception as e:                              # noqa: BLE001
+            problems.append(f"{candidate}: {type(e).__name__}")
+            continue
+        if resp.status != 200 or not resp.text.strip():
+            problems.append(f"{candidate}: HTTP {resp.status}")
+            continue
+        try:
+            parsed = parse_js_assignments(resp.text)
+        except Exception as e:                              # noqa: BLE001
+            problems.append(f"{candidate}: unparseable ({type(e).__name__})")
+            continue
+        objdata = _d(parsed.get("objectData")).get(str(vid)) or {}
+        entry = _l(_d(objdata).get("data"))
+        first = _d(entry[0]) if entry else {}
+        return {
+            "pattern": candidate,
+            "typeIconPath": _d(objdata).get("typeIconPath") or "",
+            "type": first.get("type") or "",
+            "viewpoints": len(_l(parsed.get("viewpointsData"))),
+            "legends": len(_d(parsed.get("vp_legends"))),
+            "objectReferences": len(_d(parsed.get("objectReferences"))),
+            "viewReferences": len(_d(parsed.get("viewReferences"))),
+            "documentation_chars": sum(len(t)
+                                       for t in _documentation(first).values()),
+        }
+    return {"error": "; ".join(problems)}
 
 
 def report_pages(rows: dict, fetcher: Fetcher, sample: list[str]) -> dict:
@@ -469,15 +533,24 @@ def report_pages(rows: dict, fetcher: Fetcher, sample: list[str]) -> dict:
     per_type: dict[str, Counter] = defaultdict(Counter)
     relations: Counter = Counter()
     icons: Counter = Counter()
+    navigation: Counter = Counter()
     per_view, failed = [], []
+    meta_ok, meta_problems = 0, Counter()
+    pattern = ""
 
     for vid in sample:
         r = rows[vid]
-        meta = {}
         try:
-            meta = probe_view_data(fetcher, vid)
+            meta = probe_view_data(fetcher, vid, pattern)
         except Exception as e:                              # noqa: BLE001
             meta = {"error": type(e).__name__}
+        if meta.get("error"):
+            meta_problems[meta["error"]] += 1
+        else:
+            meta_ok += 1
+            # Lock on after the first success so the dead candidates are not
+            # re-requested 29 more times.
+            pattern = pattern or meta.get("pattern", "")
         if meta.get("typeIconPath"):
             icons[meta["typeIconPath"]] += 1
 
@@ -501,19 +574,27 @@ def report_pages(rows: dict, fetcher: Fetcher, sample: list[str]) -> dict:
                 relations[kind] += n
 
         semantic = {b["semantic"] for b in blocks.values() if b.get("semantic")}
+        nav = sum(1 for s in semantic
+                  if rows.get(s, {}).get("named") or s in rows)
+        if nav:
+            navigation[r["category"]] += nav
         print(f"  {vid:<8}{r['category'][:22]:<23}{r['model'][:26]:<27}"
               f"{len(blocks):>5} blocks{len(real):>4} concepts"
-              f"{len(semantic):>5} semantic  vp={meta.get('viewpoints', '?')}",
-              flush=True)
+              f"{len(semantic):>5} semantic{nav:>5} nav", flush=True)
         per_view.append({"id": vid, "category": r["category"],
                          "model": r["model"], "blocks": len(blocks),
                          "concepts": len(real), "semantic": len(semantic),
+                         "navigation_targets": nav,
                          "members": r["members"], **meta})
 
-    print(f"\n  fetched {len(per_view)} of {len(sample)}; {len(failed)} failed",
-          flush=True)
+    print(f"\n  pages fetched {len(per_view)} of {len(sample)}; "
+          f"{len(failed)} failed", flush=True)
     for vid, why in failed:
         print(f"    {vid}  {why}", flush=True)
+    print(f"  view data files read {meta_ok} of {len(sample)}"
+          + (f", pattern {pattern}" if pattern else ""), flush=True)
+    for why, n in meta_problems.most_common(4):
+        print(f"    {n:>4}  {why[:100]}", flush=True)
 
     print("\n  Concept vocabulary per view type. A UML_ prefix means the\n"
           "  existing converter understands the page; anything else needs its\n"
@@ -538,14 +619,39 @@ def report_pages(rows: dict, fetcher: Fetcher, sample: list[str]) -> dict:
         for path, n in icons.most_common():
             print(f"    {path[:W - 1]:<{W}}{n:>5}", flush=True)
 
-    vps = sum(v.get("viewpoints") or 0 for v in per_view)
-    print(f"\n  viewpoints declared across the sample: {vps}", flush=True)
-    if not vps:
-        print("  None. ArchiMate viewpoints would have stated each view's\n"
-              "  purpose directly; without them, purpose has to come from\n"
-              "  axis A -- the model a view belongs to.", flush=True)
+    if navigation:
+        print("\n  Navigation targets -- members that are themselves views:",
+              flush=True)
+        for cat, n in navigation.most_common():
+            print(f"    {cat[:39]:<40}{n:>7}", flush=True)
+        print("  A view built mostly from other views is an index, not\n"
+              "  content. Architecture overview was 51% Class diagram members\n"
+              "  and 28% Total view members on the first run.", flush=True)
+
+    # The denominator here is view data files successfully READ, not views
+    # sampled. The first run printed "viewpoints: 0" and a conclusion drawn
+    # from it while every one of the 30 fetches had failed -- a zero that was
+    # an absence of measurement wearing the label of a measurement.
+    if not meta_ok:
+        print("\n  viewpoints: NOT MEASURED -- no view data file was read.\n"
+              "  Nothing follows about viewpoints from this run. Find the real\n"
+              "  path from a saved page's script tags before concluding.",
+              flush=True)
+        vps = None
+    else:
+        vps = sum(v.get("viewpoints") or 0 for v in per_view)
+        print(f"\n  viewpoints declared, across {meta_ok} view data files read:"
+              f" {vps}", flush=True)
+        if not vps:
+            print("  None declared. ArchiMate viewpoints would have stated a\n"
+                  "  view's purpose outright; without them, purpose comes from\n"
+                  "  axis A -- the model a view belongs to.", flush=True)
 
     return {"views": per_view, "concepts": out_concepts,
+            "navigation": navigation.most_common(),
+            "view_data_pattern": pattern, "view_data_read": meta_ok,
+            "view_data_problems": meta_problems.most_common(4),
+            "viewpoints": vps,
             "relations": relations.most_common(), "icons": icons.most_common(),
             "failed": failed}
 
