@@ -1,0 +1,72 @@
+name: Probe — ArchiMate views and elements
+
+# How is ArchiMate used in the BIAN landscape, and which parts are worth
+# taking? The pipeline drops ArchiMate relation objects and never fetches a
+# view that is not a Class or Sequence diagram -- 1,055 of 2,285 views at v14.
+# Before anything is extracted selectively, there has to be a taxonomy of what
+# is there. This probe builds one on four axes:
+#
+#   A  MODEL      data/models_data.js holds `insite_models`: named models, each
+#                 listing its views. The model name is the closest thing to a
+#                 statement of purpose the landscape publishes. The pipeline
+#                 has never read this file.
+#   B  VIEW TYPE  the diagram object's own category, as the planner reads it
+#   C  NOTATION   typeIconPath, observed as data/icons/ArchiMate/AllView.png --
+#                 a per-object notation discriminator, if the shards carry it
+#   D  COVERAGE   what share of a view's members is_wanted() already keeps, so
+#                 "adds structure" and "adds elements" can be told apart
+#
+# Then it samples pages for the ArchiMate concept vocabulary and any declared
+# viewpoints, and prints mechanical per-cell verdicts as a short list to read.
+#
+# Read-only, no secrets. Prints counts, categories, concept names and icon
+# paths; never harvested prose -- documentation is a length. Roughly 50 data
+# requests plus two small files per sampled view, paced at one second.
+#
+# Delete once the decision it informs has been made.
+
+on:
+  workflow_dispatch:
+    inputs:
+      per_cell:
+        description: "View pages to sample per (model, view type) cell"
+        required: false
+        default: "1"
+      no_pages:
+        description: "Axes A, B, C and E from the data files only"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-archimate
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: How is ArchiMate used, and what is worth taking?
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Probe ArchiMate views and elements
+        run: |
+          python3 tools/probe_archimate.py \
+            --per-cell "${{ inputs.per_cell }}" \
+            ${{ inputs.no_pages && '--no-pages' || '' }} \
+            --json probe-archimate.json
+
+      - name: Upload probe result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-archimate
+          path: probe-archimate.json
+          if-no-files-found: warn
+          retention-days: 30
