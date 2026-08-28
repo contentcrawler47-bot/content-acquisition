@@ -117,7 +117,7 @@ jobs:
           echo "::error title=PLAN failed::Could not read the v14 model, or the view classification does not match the landscape. Drive was never contacted."
           echo "No view pages were requested. Read the MODEL and VIEW CLASSIFICATION blocks above."
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: parts-plan
           path: ${{ env.PARTS }}
@@ -144,7 +144,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: parts-plan
           path: ${{ env.PARTS }}
@@ -212,7 +212,7 @@ jobs:
         if: always()
         run: printf 'PART=%02d\n' "${{ matrix.index }}" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: parts-chunk-${{ env.PART }}
@@ -234,7 +234,7 @@ jobs:
       # items.json, so merging them into one directory would have each chunk
       # overwrite the last. They come down as siblings and are put back into
       # the layout the pipeline wrote.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: parts-*
           path: ${{ env.PARTS }}/incoming

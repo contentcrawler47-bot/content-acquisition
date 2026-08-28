@@ -54,7 +54,7 @@ the map, not the inventory.
 | `tools/landscape_census.py` | Landscape counts, each with its denominator |
 | `tools/view_to_plantuml.py`, `tools/publish_sample.py`, `tools/probe_*.py` | Diagnostics and one-off investigations |
 | `core/__init__.py`, `sources/__init__.py`, `sources/*/__init__.py`, `bianlib/__init__.py` | Empty package markers — required |
-| `.github/workflows/` | Fifteen workflows; see **The scheduled week** in the README |
+| `.github/workflows/` | Sixteen workflows; see **The scheduled week** in the README |
 | `MANIFEST.sha256` | The shipped state, checked by **Verify repo contents** |
 | `changesets/` | Upload target for revision zips |
 | `.gitignore`, `README.md`, `SETUP.md`, `docs/ADDING_A_SOURCE.md` | |

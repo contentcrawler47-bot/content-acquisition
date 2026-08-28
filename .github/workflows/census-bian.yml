@@ -37,7 +37,7 @@ jobs:
         run: python3 tools/landscape_census.py --json census.json
 
       - name: Upload the counts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: landscape-census
           path: census.json
