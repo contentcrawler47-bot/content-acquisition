@@ -107,10 +107,11 @@
           "status": {
             "type": "object",
             "required": [
-              "models",
               "geometry",
+              "malformed_objects",
+              "models",
               "notation_unresolved",
-              "malformed_objects"
+              "unresolved_members"
             ],
             "additionalProperties": true,
             "properties": {
@@ -139,6 +140,10 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "unresolved_members": {
+                "type": "integer",
+                "minimum": 0
               }
             }
           },
@@ -434,9 +439,11 @@
       "required": [
         "type",
         "view",
-        "object"
+        "target",
+        "target_type"
       ],
       "additionalProperties": false,
+      "description": "A placement on a view. The target is usually an object, but objectsOnViews also carries diagram-to-diagram references, so target_type says which.",
       "properties": {
         "type": {
           "const": "ViewMember"
@@ -445,9 +452,16 @@
           "type": "string",
           "pattern": "^urn:bian:[^:]+:view:"
         },
-        "object": {
+        "target": {
           "type": "string",
-          "pattern": "^urn:bian:[^:]+:object:"
+          "pattern": "^urn:bian:[^:]+:(object|view):"
+        },
+        "target_type": {
+          "enum": [
+            "object",
+            "view",
+            "unresolved"
+          ]
         }
       }
     },

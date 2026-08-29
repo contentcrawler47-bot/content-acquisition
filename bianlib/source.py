@@ -146,6 +146,9 @@ class BianSource(BaseSource):
         print(f"  content: {summary['content_digest'][:16]}", flush=True)
         print(f"  notation unresolved: {status['notation_unresolved']} of "
               f"{counts['objects']}", flush=True)
+        print(f"  memberships resolving to nothing: "
+              f"{status['unresolved_members']} of "
+              f"{counts['view_members']}", flush=True)
         print(f"  models : {status['models']}   "
               f"geometry: {status['geometry']}", flush=True)
         if status["malformed_objects"]:

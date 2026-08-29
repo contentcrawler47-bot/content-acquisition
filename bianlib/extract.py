@@ -45,12 +45,12 @@ from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
 #: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
 #: reason: derived output must say what derived it.
-PARSER_VERSION = "1"
+PARSER_VERSION = "2"
 
 #: Scopes. `model-only` reads the shards and index files and no view pages,
 #: which is the whole landscape model in about a minute. `full` additionally
@@ -97,40 +97,43 @@ def context() -> dict:
 
 # --- notation --------------------------------------------------------------
 
-#: `typeIconPath` names the notation an object is drawn in — UML, ArchiMate or
-#: a model package. It is read defensively: the field has been measured as
-#: present on every object, but this code has never itself run against a live
-#: shard, so a miss is counted and reported rather than guessed at. A run that
-#: resolves notation for zero objects is a loud failure in check_extract, not
-#: a silent column of nulls.
-ICON_HINTS = (
-    ("archimate", "ArchiMate"),
-    ("uml_", "UML"),
-    ("uml/", "UML"),
-    ("mm_modelpackage", "MM_ModelPackage"),
-    ("modelpackage", "MM_ModelPackage"),
-)
+#: `typeIconPath` names the notation an object is drawn in. It sits on the
+#: object WRAPPER, beside "data", not inside the first data entry. The first
+#: version of this module read it one level too deep and resolved notation for
+#: 0 of 128,270 objects on 29 August 2026 — which the checker reported as NOT
+#: MEASURED rather than as an absent column, and that is how it was found.
+#:
+#: The shape is data/icons/<Notation>/<Type>.png, so the notation is the path
+#: segment after "icons". Taken structurally rather than by matching substrings
+#: of the filename: the probe run that measured the split (68,626 UML, 52,354
+#: ArchiMate, 7,290 MM_ModelPackage, summing to every object) read it this way,
+#: and a substring test would have produced roughly the right answer for the
+#: wrong reason.
+ICON_SEGMENT = "icons"
 
 
-def _icon_path(entry: dict) -> str:
-    for key in ("typeIconPath", "typeIcon", "iconPath"):
-        value = entry.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+def _icon_path(obj: dict) -> str:
+    """The icon path from an object wrapper, or "" if it is not there."""
+    if not isinstance(obj, dict):
+        return ""
+    value = obj.get("typeIconPath")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return ""
 
 
 def notation_of(icon_path: str) -> str:
     """Notation from an icon path, or "" when it cannot be decided.
 
-    Returning "" rather than a default is deliberate: an unrecognised icon and
+    Returning "" rather than a default is deliberate: an unrecognised path and
     a known notation must not produce the same value, or the count of resolved
     notations stops meaning anything.
     """
-    low = icon_path.lower()
-    for needle, name in ICON_HINTS:
-        if needle in low:
-            return name
+    parts = [p for p in str(icon_path).split("/") if p]
+    if ICON_SEGMENT in parts:
+        i = parts.index(ICON_SEGMENT)
+        if i + 1 < len(parts):
+            return parts[i + 1]
     return ""
 
 
@@ -164,7 +167,7 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
             malformed.append(str(oid))
             continue
         category = landscape.categories.get(oid, "") or "Other"
-        icon = _icon_path(entry)
+        icon = _icon_path(obj)
         notation = notation_of(icon)
         if not notation:
             notation_missing += 1
@@ -221,6 +224,7 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
     models_by_view = _models_index(insite_models)
 
     views, view_members = [], []
+    unresolved_members = 0
     for vid in sorted(all_views):
         oids = members.get(vid, [])
         category = landscape.categories.get(vid, "")
@@ -239,10 +243,25 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
         }
         views.append(record)
         for oid in oids:
+            # A membership does not always point at an object. objectsOnViews
+            # also carries diagram-to-diagram references: measured on 29 August
+            # 2026, 4,956 of 127,588 memberships name a view. 4,571 of those
+            # resolve as objects too, because a named view IS an object in this
+            # model, and only the 385 views that are not objects showed up as
+            # dangling. Classifying the target says what the data actually
+            # holds, rather than tolerating a count of unresolved references.
+            if oid in landscape.objects:
+                target, kind = _urn(source_id, "object", oid), "object"
+            elif oid in all_views:
+                target, kind = _urn(source_id, "view", oid), "view"
+            else:
+                target, kind = _urn(source_id, "object", oid), "unresolved"
+                unresolved_members += 1
             view_members.append({
                 "type": "ViewMember",
                 "view": _urn(source_id, "view", vid),
-                "object": _urn(source_id, "object", oid),
+                "target": target,
+                "target_type": kind,
             })
 
     models = _models_list(insite_models)
@@ -267,6 +286,7 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
             "geometry": "not-fetched",
             "notation_unresolved": notation_missing,
             "malformed_objects": len(malformed),
+            "unresolved_members": unresolved_members,
         },
         "notations": [{"type": "Notation", "name": n, "object_count": c}
                       for n, c in sorted(notations.items())],

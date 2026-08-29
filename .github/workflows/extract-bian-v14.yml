@@ -73,8 +73,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Both files. setup-python provides a clean interpreter, so without
+      # requirements.txt the API source fails to import and discovery reports
+      # it as a load failure — harmless for this source, but indistinguishable
+      # in the log from a real one.
       - name: Install pinned validation dependencies
-        run: python3 -m pip install --require-hashes -r requirements-extract.txt
+        run: |
+          python3 -m pip install --require-hashes -r requirements.txt
+          python3 -m pip install --require-hashes -r requirements-extract.txt
 
       - name: Build the extract
         run: python3 run.py extract "$SOURCE_ID" --mode "${{ inputs.mode }}"
