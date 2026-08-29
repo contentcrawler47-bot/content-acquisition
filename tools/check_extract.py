@@ -98,17 +98,18 @@ def load(outdir: Path) -> tuple[dict, dict]:
         (outdir / E.INDEX_FILE).read_text(encoding="utf-8"))
     raw[E.INDEX_FILE] = index
     for meta in index.get("parts", []):
-        raw[meta["file"]] = json.loads(
-            (outdir / meta["file"]).read_text(encoding="utf-8"))
+        for p in meta.get("partitions", []):
+            raw[p["file"]] = json.loads(
+                (outdir / p["file"]).read_text(encoding="utf-8"))
     return doc, raw
 
 
 def check_parts(outdir: Path, raw: dict, result: Result) -> None:
-    """The index and the part files must agree, and each part must be intact.
+    """The index, the partitions and the files on disk must all agree.
 
-    Counts and digests are declared in two places by design — the index says
-    what it expects each part to hold, and each part says what it holds. That
-    is only useful if something compares them.
+    Counts and digests are declared in three places by design - the index says
+    what each collection and each partition should hold, and each partition
+    says what it holds. That is only useful if something compares them.
     """
     from bianlib import extract as E
 
@@ -122,31 +123,74 @@ def check_parts(outdir: Path, raw: dict, result: Result) -> None:
         result.add(PASS, "index declares every part",
                    f"{len(declared)} of {len(E.PARTS)}")
 
-    agree = digests = 0
+    agree = 0
+    total_parts = 0
     for name, meta in sorted(declared.items()):
-        payload = raw.get(meta["file"], {})
-        items = payload.get(name, [])
-        if len(items) == meta["count"] == payload.get("count"):
+        parts = meta.get("partitions", [])
+        total_parts += len(parts)
+        seen = []
+        for p in parts:
+            payload = raw.get(p["file"], {})
+            items = payload.get(name, [])
+            seen.extend(items)
+            if not (len(items) == p["count"] == payload.get("count")):
+                result.add(FAIL, f"partition {p['file']} count agrees",
+                           f"index {p['count']}, header "
+                           f"{payload.get('count')}, actual {len(items)}")
+                continue
+            if E.part_digest(items) != p["content_digest"]:
+                result.add(FAIL, f"partition {p['file']} digest reproduces",
+                           f"recomputed {E.part_digest(items)[:16]} != "
+                           f"{p['content_digest'][:16]}")
+                continue
             agree += 1
-        else:
-            result.add(FAIL, f"part {name} count agrees",
-                       f"index {meta['count']}, header "
-                       f"{payload.get('count')}, actual {len(items)}")
-        recomputed = E.part_digest(items)
-        if recomputed == meta["content_digest"] == payload.get("content_digest"):
-            digests += 1
-        else:
-            result.add(FAIL, f"part {name} digest reproduces",
-                       f"recomputed {recomputed[:16]}, index "
-                       f"{str(meta['content_digest'])[:16]}, header "
-                       f"{str(payload.get('content_digest'))[:16]}")
-    if declared:
-        result.count(agree, len(declared), "part counts agree with the index",
-                     expected=len(declared))
-        result.count(digests, len(declared), "part digests reproduce",
-                     expected=len(declared))
+        if len(seen) != meta["count"]:
+            result.add(FAIL, f"{name} partitions hold the whole collection",
+                       f"{len(seen)} across partitions, index says "
+                       f"{meta['count']}")
+    result.count(agree, total_parts,
+                 "partitions agree with the index", expected=total_parts)
 
-    # The sidecar records the bytes on disk, which the content digests do not.
+    # Boundaries must tile the key space: sorted, contiguous, no overlap, and
+    # every item inside the range its own partition declares. A key falling in
+    # a gap would be unreachable through the partition function even though it
+    # is present in the file.
+    ok_bounds = ok_keys = total_keys = 0
+    for name, meta in sorted(declared.items()):
+        parts = sorted(meta.get("partitions", []), key=lambda p: p["partition"])
+        contiguous = all(a["max_key"] + 1 == b["min_key"]
+                         for a, b in zip(parts, parts[1:]))
+        ordered = all(p["min_key"] <= p["max_key"] for p in parts)
+        if contiguous and ordered:
+            ok_bounds += 1
+        else:
+            result.add(FAIL, f"{name} boundaries tile the key space",
+                       "partitions overlap or leave a gap")
+        for p in parts:
+            for item in raw.get(p["file"], {}).get(name, []):
+                total_keys += 1
+                if p["min_key"] <= E._key(name, item) <= p["max_key"]:
+                    ok_keys += 1
+    result.count(ok_bounds, len(declared),
+                 "boundaries tile the key space", expected=len(declared))
+    result.count(ok_keys, total_keys, "every item sits in its own partition",
+                 expected=total_keys)
+
+    # The partition function has to actually find things. Resolving a sample
+    # through locate() tests the published boundaries the way a reader would,
+    # rather than trusting that they were written correctly.
+    found = tried = 0
+    for name, meta in sorted(declared.items()):
+        for p in meta.get("partitions", [])[:5]:
+            items = raw.get(p["file"], {}).get(name, [])
+            if not items:
+                continue
+            tried += 1
+            if E.locate(index, name, E._key(name, items[0])) == p["file"]:
+                found += 1
+    result.count(found, tried, "partition function resolves to the right file",
+                 expected=tried)
+
     sidecar = outdir / E.SIDECAR_FILE
     if not sidecar.is_file():
         result.add(FAIL, "sidecar digests present", f"{E.SIDECAR_FILE} missing")
@@ -160,12 +204,10 @@ def check_parts(outdir: Path, raw: dict, result: Result) -> None:
         if not path.is_file():
             result.add(FAIL, "sidecar digests match", f"{fname} missing")
             continue
-        got = hashlib.sha256(path.read_bytes()).hexdigest()
-        if got == want:
+        if hashlib.sha256(path.read_bytes()).hexdigest() == want:
             ok += 1
         else:
-            result.add(FAIL, "sidecar digests match",
-                       f"{fname}: {got[:16]} != {want[:16]}")
+            result.add(FAIL, "sidecar digests match", f"{fname} differs")
     result.count(ok, len(lines), "sidecar file digests match",
                  expected=len(lines))
 

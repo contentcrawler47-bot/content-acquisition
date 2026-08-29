@@ -140,7 +140,8 @@ class BianSource(BaseSource):
               f"{counts['views']} views, "
               f"{counts['view_members']} memberships", flush=True)
         for part, size in summary["part_bytes"].items():
-            print(f"    {part:<14} {size / 1024 / 1024:>8.1f} MB", flush=True)
+            print(f"    {part:<14} {size / 1024 / 1024:>8.1f} MB  "
+                  f"{summary['partitions'][part]:>4} partitions", flush=True)
         print(f"  total  : {summary['bytes'] / 1024 / 1024:.1f} MB "
               f"across {summary['files']} files", flush=True)
         print(f"  content: {summary['content_digest'][:16]}", flush=True)

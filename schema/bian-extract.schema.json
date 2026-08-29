@@ -167,16 +167,15 @@
           },
           "parts": {
             "type": "array",
-            "description": "One entry per part file. Content digests live here; byte digests live in EXTRACT.sha256, because they answer different questions.",
             "minItems": 4,
+            "description": "One entry per collection, each listing its range partitions with the boundaries that define the partition function. Boundaries are cut at equal rank and published here, so placement is a lookup against this document rather than a computation a reader must reimplement.",
             "items": {
               "type": "object",
               "required": [
                 "part",
-                "file",
                 "count",
                 "content_digest",
-                "bytes"
+                "partitions"
               ],
               "additionalProperties": false,
               "properties": {
@@ -188,10 +187,6 @@
                     "view_members"
                   ]
                 },
-                "file": {
-                  "type": "string",
-                  "pattern": "\\.jsonld$"
-                },
                 "count": {
                   "type": "integer",
                   "minimum": 0
@@ -199,9 +194,12 @@
                 "content_digest": {
                   "$ref": "#/$defs/sha256"
                 },
-                "bytes": {
-                  "type": "integer",
-                  "minimum": 0
+                "partitions": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "#/$defs/partition"
+                  }
                 }
               }
             }
@@ -223,12 +221,15 @@
       "then": {
         "required": [
           "@context",
-          "id",
-          "type",
-          "part",
-          "extract",
+          "content_digest",
           "count",
-          "content_digest"
+          "extract",
+          "id",
+          "max_key",
+          "min_key",
+          "part",
+          "partition",
+          "type"
         ],
         "additionalProperties": false,
         "properties": {
@@ -284,6 +285,16 @@
             "items": {
               "$ref": "#/$defs/viewMember"
             }
+          },
+          "partition": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "min_key": {
+            "type": "integer"
+          },
+          "max_key": {
+            "type": "integer"
           }
         }
       }
@@ -539,6 +550,46 @@
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "partition": {
+      "type": "object",
+      "required": [
+        "file",
+        "partition",
+        "min_key",
+        "max_key",
+        "count",
+        "content_digest",
+        "bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "-[0-9]{4}\\.jsonld$"
+        },
+        "partition": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_key": {
+          "type": "integer"
+        },
+        "max_key": {
+          "type": "integer"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
     }
   }
 }

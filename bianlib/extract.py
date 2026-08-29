@@ -45,7 +45,7 @@ from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
 #: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
@@ -334,24 +334,51 @@ def _models_list(insite_models) -> list:
     return out
 
 
-# --- serialising -----------------------------------------------------------
+# --- partitioning and serialising ------------------------------------------
 
-#: The bulk collections, each written to its own file. Measured on 29 August
-#: 2026 the landscape is 148.5 MB of raw payload across 47 shards and the
-#: index files; a single pretty-printed document holding all of it is awkward
-#: for stage 2 to load, awkward to sync, and effectively unreadable through
-#: the Drive connector — which was one of the reasons for publishing it.
+#: Each bulk collection is written as a set of partitions rather than one file.
+#: Measured on 29 August 2026 the extract is 67.3 MB, of which objects alone is
+#: 32.3 MB — a size nothing can read and stage 2 would have to load whole.
 #:
-#: Splitting also lets stage 2 read only what it needs and lets one part be
-#: verified on its own.
+#: Partitioning is by RANGE over an integer key, with boundaries cut at equal
+#: RANK. Cutting by rank rather than by value means no assumption is made about
+#: how the ids are distributed: on this data they span 28,702 to 745,473 at
+#: 17.9% density, and equal-value slices would be badly uneven. Equal rank is
+#: even by construction whatever the distribution.
+#:
+#: Boundaries are published in the index, so the partition function is a lookup
+#: against the document rather than a computation a reader has to reimplement.
+#: That is also what keeps repartitioning local: splitting one boundary rewrites
+#: one file, where changing a modulus would remap everything.
+#:
+#: Boundaries are recomputed each run rather than frozen. Freezing would need
+#: them stored either in the repo, which is public and must hold no harvested
+#: data, or carried from a prior extract, which makes a run depend on an earlier
+#: one. Recomputing is safe because identity is location-free: nothing anywhere
+#: references a partition, so an object landing elsewhere next run breaks
+#: nothing. The cost is that partition digests are not comparable across runs.
 PARTS = ("objects", "relations", "views", "view_members")
 
-PART_FILE = {
-    "objects": "objects.jsonld",
-    "relations": "relations.jsonld",
-    "views": "views.jsonld",
-    "view_members": "view-members.jsonld",
+#: The integer each part is partitioned on. Objects and their relations share
+#: the object id, so a relation sits in the partition matching its source.
+PART_KEY = {
+    "objects": lambda i: i["object_id"],
+    "relations": lambda i: i["source"].rsplit(":", 1)[1],
+    "views": lambda i: i["view_id"],
+    "view_members": lambda i: i["view"].rsplit(":", 1)[1],
 }
+
+PART_SLUG = {
+    "objects": "objects",
+    "relations": "relations",
+    "views": "views",
+    "view_members": "view-members",
+}
+
+#: Items per partition. At the measured mean sizes this puts objects near
+#: 264 KB and the others lower — small enough to load one at a time, large
+#: enough that the index stays a few hundred rows rather than thousands.
+PARTITION_ITEMS = 1000
 
 INDEX_FILE = "extract.jsonld"
 
@@ -377,20 +404,99 @@ def _sha256(text: str) -> str:
 
 
 def part_digest(items: list) -> str:
-    """Content digest of one part, independent of how it is laid out on disk."""
-    return _sha256(_canonical(items))
+    """Content digest of one collection, independent of how it is laid out.
+
+    Items are canonicalised and sorted before hashing, so the digest identifies
+    the SET of items and not the order they happened to be built in.
+    Partitioning reorders by key, so an order-sensitive digest would change on
+    a round trip through write() and read() even though nothing about the
+    content had changed - which is precisely the question this digest exists
+    to answer.
+    """
+    return _sha256(_canonical(sorted(_canonical(i) for i in items)))
+
+
+def _key(name: str, item: dict) -> int:
+    """The partition key of an item, as an integer.
+
+    Non-numeric keys sort to the end rather than raising: an id that is not a
+    number is a fact about the source, not a reason to lose the run, and it
+    surfaces as an out-of-range key in check_extract.
+    """
+    raw = PART_KEY[name](item)
+    return int(raw) if str(raw).isdigit() else -1
+
+
+def partition(name: str, items: list, per: int = PARTITION_ITEMS) -> list:
+    """Split items into range partitions with boundaries cut at equal rank.
+
+    A partition boundary never falls inside a key. The key is not unique for
+    every collection - one object has many relations, and one view has up to
+    964 members - so cutting purely by rank would put items sharing a key on
+    both sides of a boundary, and each would then sit outside the range its own
+    partition declares. Grouping by key first and packing whole groups keeps
+    every lookup resolving to exactly one file, at the cost of partitions
+    varying in size when a single key is large.
+
+    Returns [{index, min_key, max_key, items}], contiguous and non-overlapping.
+    """
+    if not items:
+        return [{"index": 0, "min_key": 0, "max_key": 0, "items": []}]
+
+    groups: dict = {}
+    for item in items:
+        groups.setdefault(_key(name, item), []).append(item)
+    ordered = sorted(groups.items())
+
+    packs, current = [], []
+    for key, members in ordered:
+        if current and len(current) + len(members) > per:
+            packs.append(current)
+            current = []
+        current.extend(sorted(members, key=_canonical))
+    if current or not packs:
+        packs.append(current)
+
+    out = []
+    for n, chunk in enumerate(packs):
+        keys = [_key(name, i) for i in chunk] or [0]
+        out.append({"index": n, "min_key": min(keys), "max_key": max(keys),
+                    "items": chunk})
+    # Make the ranges contiguous so a lookup can never fall down a gap. Safe
+    # because no key spans two partitions.
+    for a, b in zip(out, out[1:]):
+        a["max_key"] = b["min_key"] - 1
+    out[-1]["max_key"] = max(_key(name, i) for i in items)
+    return out
+
+
+def partition_file(name: str, index: int) -> str:
+    return f"{PART_SLUG[name]}-{index:04d}.jsonld"
+
+
+def locate(index_doc: dict, name: str, key) -> str:
+    """The partition function: object reference -> partition file.
+
+    A lookup against the boundaries the index publishes, not a computation.
+    Exported so tools and stage 2 resolve placement one way rather than each
+    growing its own copy of the rule.
+    """
+    k = int(key) if str(key).isdigit() else -1
+    for meta in index_doc.get("parts", []):
+        if meta.get("part") != name:
+            continue
+        for p in meta.get("partitions", []):
+            if p["min_key"] <= k <= p["max_key"]:
+                return p["file"]
+    return ""
 
 
 def content_digest(doc: dict) -> str:
     """Digest over the content, excluding run metadata.
 
-    Built from the parts' own digests rather than from the whole document, so
-    it can be recomputed by a reader holding only the index and the part
-    digests, and so a changed part names itself.
-
-    `fetched_at` changes every run and is excluded, which is what lets this
-    answer "did anything actually change" — the question the determinism check
-    in stage 2 asks.
+    Taken over each collection whole rather than over its partitions, so it is
+    stable against a change in PARTITION_ITEMS: refiling the same objects into
+    different partitions is not a change in content.
     """
     payload = {"parts": {name: part_digest(doc.get(name, []) or [])
                          for name in PARTS}}
@@ -399,19 +505,22 @@ def content_digest(doc: dict) -> str:
     return _sha256(_canonical(payload))
 
 
-def _part_text(doc_id: str, name: str, items: list) -> str:
-    """One part file: a JSON-LD document with one item per line.
+def _part_text(doc_id: str, name: str, part: dict) -> str:
+    """One partition file: a JSON-LD document with one item per line.
 
     Not pretty-printed — at this scale indentation is megabytes — but not a
-    single line either, because a file nobody can read or grep is a file
-    nobody will check. One compact item per line is valid JSON, diffable, and
-    close to the compact size.
+    single line either, because a file nobody can read or grep is a file nobody
+    will check.
     """
+    items = part["items"]
     header = {
         "@context": context(),
-        "id": f"{doc_id}:part:{name}",
+        "id": f"{doc_id}:part:{name}:{part['index']:04d}",
         "type": "ExtractPart",
         "part": name,
+        "partition": part["index"],
+        "min_key": part["min_key"],
+        "max_key": part["max_key"],
         "extract": doc_id,
         "count": len(items),
         "content_digest": part_digest(items),
@@ -419,48 +528,52 @@ def _part_text(doc_id: str, name: str, items: list) -> str:
     fields = ",\n ".join(
         f"{json.dumps(k)}: {json.dumps(v, ensure_ascii=False, sort_keys=True)}"
         for k, v in sorted(header.items()))
-    if items:
-        body = "[\n  " + ",\n  ".join(_canonical(i) for i in items) + "\n ]"
-    else:
-        body = "[]"
+    body = ("[\n  " + ",\n  ".join(_canonical(i) for i in items) + "\n ]"
+            if items else "[]")
     return "{\n " + fields + ",\n " + json.dumps(name) + ": " + body + "\n}\n"
 
 
-def write(doc: dict, outdir) -> dict:
-    """Write the index and one file per part. Returns a summary.
-
-    Takes a directory rather than a file path: the extract is now several
-    files that must be read together, and handing back a single path would
-    invite a caller to treat one of them as the whole thing.
-    """
+def write(doc: dict, outdir, per: int = PARTITION_ITEMS) -> dict:
+    """Write the index and every partition. Returns a summary."""
     outdir.mkdir(parents=True, exist_ok=True)
     doc_id = doc.get("id", "")
-
     written, parts_meta, total_bytes = {}, [], 0
+
     for name in PARTS:
         items = doc.get(name, []) or []
-        text = _part_text(doc_id, name, items)
-        path = outdir / PART_FILE[name]
-        path.write_text(text, encoding="utf-8")
-        raw = path.read_bytes()
-        written[PART_FILE[name]] = _sha256(text)
-        total_bytes += len(raw)
+        partitions = partition(name, items, per)
+        pmeta = []
+        for p in partitions:
+            fname = partition_file(name, p["index"])
+            path = outdir / fname
+            text = _part_text(doc_id, name, p)
+            path.write_text(text, encoding="utf-8")
+            nbytes = len(path.read_bytes())
+            written[fname] = _sha256(text)
+            total_bytes += nbytes
+            pmeta.append({
+                "file": fname,
+                "partition": p["index"],
+                "min_key": p["min_key"],
+                "max_key": p["max_key"],
+                "count": len(p["items"]),
+                "content_digest": part_digest(p["items"]),
+                "bytes": nbytes,
+            })
         parts_meta.append({
             "part": name,
-            "file": PART_FILE[name],
             "count": len(items),
             "content_digest": part_digest(items),
-            "bytes": len(raw),
+            "partitions": pmeta,
         })
 
     index = {k: v for k, v in doc.items() if k not in PARTS}
     index["parts"] = parts_meta
-    index_path = outdir / INDEX_FILE
     index_text = json.dumps(index, ensure_ascii=False, indent=1,
                             sort_keys=True) + "\n"
-    index_path.write_text(index_text, encoding="utf-8")
+    (outdir / INDEX_FILE).write_text(index_text, encoding="utf-8")
     written[INDEX_FILE] = _sha256(index_text)
-    total_bytes += len(index_path.read_bytes())
+    total_bytes += len((outdir / INDEX_FILE).read_bytes())
 
     (outdir / SIDECAR_FILE).write_text(
         "".join(f"{written[f]}  {f}\n" for f in sorted(written)),
@@ -472,12 +585,14 @@ def write(doc: dict, outdir) -> dict:
         "content_digest": doc.get("content_digest", ""),
         "files": len(written),
         "parts": {m["part"]: m["count"] for m in parts_meta},
-        "part_bytes": {m["part"]: m["bytes"] for m in parts_meta},
+        "partitions": {m["part"]: len(m["partitions"]) for m in parts_meta},
+        "part_bytes": {m["part"]: sum(p["bytes"] for p in m["partitions"])
+                       for m in parts_meta},
     }
 
 
 def read(outdir) -> dict:
-    """Load a split extract back into one document.
+    """Load a partitioned extract back into one document.
 
     The inverse of write(), used by stage 2 and by tools/check_extract.py so
     that both read the extract the same way rather than each growing its own
@@ -486,7 +601,10 @@ def read(outdir) -> dict:
     index = json.loads((outdir / INDEX_FILE).read_text(encoding="utf-8"))
     doc = {k: v for k, v in index.items() if k != "parts"}
     for meta in index.get("parts", []):
-        payload = json.loads(
-            (outdir / meta["file"]).read_text(encoding="utf-8"))
-        doc[meta["part"]] = payload.get(meta["part"], [])
+        items = []
+        for p in meta.get("partitions", []):
+            payload = json.loads(
+                (outdir / p["file"]).read_text(encoding="utf-8"))
+            items.extend(payload.get(meta["part"], []))
+        doc[meta["part"]] = items
     return doc

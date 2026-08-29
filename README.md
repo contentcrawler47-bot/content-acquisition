@@ -119,10 +119,15 @@ they need to report a count against a denominator — "1,900 of 2,285 views
 resolve, 385 are not objects in the model" — where a conformance boolean would
 not say enough to act on.
 
-The extract is several files, not one: an index plus a file per bulk
-collection (`objects`, `relations`, `views`, `view_members`). The landscape is
-148.5 MB of raw payload, so a single pretty-printed document would be awkward
-to load, to sync and to read. Each part carries its own count and content
+The extract is an index plus range partitions of each bulk collection
+(`objects`, `relations`, `views`, `view_members`) — 380 files at v14. The index
+publishes the boundaries, so finding the partition holding an object is a
+lookup against the document rather than a rule a reader has to reimplement, and
+`bianlib.extract.locate()` is the one implementation of it. Boundaries are cut
+at equal rank, which assumes nothing about how the ids are distributed, and a
+boundary never falls inside a key — one view has up to 964 members, and
+splitting a key would leave items outside the range their own partition
+declares. Each part carries its own count and content
 digest, the index carries both again, and `check_extract.py` compares them —
 declaring a number twice is only useful if something checks it. Byte digests
 live in `EXTRACT.sha256` beside the files, because "did the file change" and
