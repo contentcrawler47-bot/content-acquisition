@@ -119,6 +119,21 @@ class Source:
         """
         return []
 
+    def build_extract(self, outdir: Path, mode: str = "model-only") -> dict:
+        """Optional. Write this source's data as a structured extract.
+
+        Stage 1 of the two-stage design: acquire and store the model, without
+        applying any selection or producing any markdown. Sources that have
+        not adopted it keep working exactly as before — this is an optional
+        capability rather than a change to the harvest contract, so adding it
+        cannot affect a source that does not implement it.
+
+        Returns a summary dict of counts and digests. Never returns content.
+        """
+        raise NotImplementedError(
+            f"{self.id} does not implement build_extract()")
+
+
     # -- helpers ---------------------------------------------------------
 
     def missing_secrets(self) -> list[str]:

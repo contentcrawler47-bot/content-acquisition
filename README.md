@@ -90,13 +90,42 @@ python3 run.py list                      configured sources and their secrets
 python3 run.py validate <source>         CAN WE EXTRACT?  (never touches Drive)
 python3 run.py check-publish             CAN WE PUBLISH?  (never touches a source)
 python3 run.py harvest <source>          acquire -> out/<source>/
+python3 run.py extract <source>          STAGE 1: model -> out/_extract/<source>/
 python3 run.py publish <source>          sync to gdrive:content/<source>/
 python3 run.py run <source> --publish    validate then publish
 python3 run.py reindex                   rebuild content/index.md
 
 python3 tools/join_report.py out/bian-v14 out/bian-apis-v14 --min-rate 99
+python3 tools/check_extract.py out/_extract/bian-v14/extract.jsonld
 python3 tools/repo_manifest.py --verify
 ```
+
+## Extraction in two stages
+
+`harvest` acquires and renders in one pass, which means a renderer change or a
+change to the category allowlist both cost another full pass over the source.
+`extract` is the first half of splitting those apart: it stores the source's
+model as JSON-LD in `out/_extract/<source>/` and applies no selection and no
+rendering at all.
+
+Storing the model unfiltered is the point. Selection belongs to the render
+stage, so adding a category to `INCLUDE_CATEGORIES` becomes a re-render against
+a stored extract rather than 47 more shard requests.
+
+`tools/check_extract.py` validates the result in two ways that catch different
+faults. `schema/bian-extract.schema.json` checks structure and is the contract
+between the two stages. The referential integrity checks are Python, because
+they need to report a count against a denominator — "1,900 of 2,285 views
+resolve, 385 are not objects in the model" — where a conformance boolean would
+not say enough to act on.
+
+Schema validation needs `jsonschema`, which no workflow installs yet. Until one
+does the structural check reports SKIP and says so; `--require-schema` turns
+its absence into a failure.
+
+Stage 1 is currently `model-only`: shards and index files, no view pages.
+`--mode full` would add per-view geometry and is refused rather than silently
+producing a model-only extract labelled otherwise.
 
 ## The scheduled week
 

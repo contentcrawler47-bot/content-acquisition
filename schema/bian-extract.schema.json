@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/contentcrawler47-bot/content-acquisition/schema/bian-extract.schema.json",
+  "title": "BIAN landscape extract (stage 1)",
+  "description": "The contract between stage 1 (extract) and stage 2 (render). Structural only: referential integrity across the graph is checked by tools/check_extract.py, which reports counts against denominators rather than a conformance boolean. Note that $id here is JSON Schema's identifier and is unrelated to JSON-LD's @id, which appears in the instance as the term 'id'.",
+  "type": "object",
+  "required": [
+    "@context",
+    "id",
+    "type",
+    "extract",
+    "status",
+    "notations",
+    "categories",
+    "objects",
+    "relations",
+    "views",
+    "view_members",
+    "models",
+    "content_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "@context": {
+      "type": "object",
+      "description": "Embedded JSON-LD context. Embedded rather than referenced so the document is self-describing offline.",
+      "minProperties": 1
+    },
+    "id": {"type": "string", "pattern": "^urn:bian:"},
+    "type": {"const": "Extract"},
+    "content_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "extract": {
+      "type": "object",
+      "required": [
+        "source_id", "base_url", "fetched_at",
+        "schema_version", "parser_version", "mode", "shards"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "base_url": {"type": "string", "minLength": 1},
+        "fetched_at": {"type": "string", "minLength": 10},
+        "schema_version": {"type": "string", "minLength": 1},
+        "parser_version": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["model-only", "full"]},
+        "shards": {"type": "array", "items": {"type": "integer"}}
+      }
+    },
+    "status": {
+      "type": "object",
+      "required": ["models", "geometry", "notation_unresolved",
+                   "malformed_objects"],
+      "additionalProperties": true,
+      "properties": {
+        "models": {"enum": ["present", "not-fetched"]},
+        "geometry": {"enum": ["present", "not-fetched"]},
+        "notation_unresolved": {"type": "integer", "minimum": 0},
+        "malformed_objects": {"type": "integer", "minimum": 0},
+        "malformed_object_ids": {
+          "type": "array", "items": {"type": "string"}
+        }
+      }
+    },
+    "notations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "name", "object_count"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {"const": "Notation"},
+          "name": {"type": "string", "minLength": 1},
+          "object_count": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "categories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "name", "object_count"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {"const": "Category"},
+          "name": {"type": "string", "minLength": 1},
+          "object_count": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "object_id", "name", "category",
+                     "notation"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^urn:bian:[^:]+:object:"},
+          "type": {"const": "Object"},
+          "object_id": {"type": "string", "minLength": 1},
+          "name": {"type": "string"},
+          "category": {"type": "string", "minLength": 1},
+          "notation": {"type": ["string", "null"]},
+          "type_icon_path": {"type": "string"},
+          "documentation": {
+            "type": "object",
+            "additionalProperties": {"type": "string"}
+          }
+        }
+      }
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "source", "target", "verb"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^urn:bian:[^:]+:relation:"},
+          "type": {"const": "Relation"},
+          "source": {"type": "string", "pattern": "^urn:bian:[^:]+:object:"},
+          "target": {"type": "string", "pattern": "^urn:bian:[^:]+:object:"},
+          "verb": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "views": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "view_id", "title", "diagram_object",
+                     "kind", "model", "member_count", "has_geometry"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^urn:bian:[^:]+:view:"},
+          "type": {"const": "View"},
+          "view_id": {"type": "string", "minLength": 1},
+          "title": {"type": "string"},
+          "diagram_object": {
+            "type": ["string", "null"],
+            "pattern": "^urn:bian:[^:]+:object:"
+          },
+          "diagram_category": {"type": ["string", "null"]},
+          "kind": {"enum": ["sequence", "class", "other", "unnamed"]},
+          "model": {"type": ["string", "null"]},
+          "member_count": {"type": "integer", "minimum": 0},
+          "has_geometry": {"type": "boolean"}
+        }
+      }
+    },
+    "view_members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "view", "object"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {"const": "ViewMember"},
+          "view": {"type": "string", "pattern": "^urn:bian:[^:]+:view:"},
+          "object": {"type": "string", "pattern": "^urn:bian:[^:]+:object:"}
+        }
+      }
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "name", "view_count"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {"const": "Model"},
+          "name": {"type": "string", "minLength": 1},
+          "view_count": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}

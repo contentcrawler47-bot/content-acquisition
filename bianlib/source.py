@@ -106,6 +106,51 @@ class BianSource(BaseSource):
                 optional=True),
         ]
 
+    # -- stage 1: extract -------------------------------------------------
+
+    def build_extract(self, outdir: Path, mode: str = "model-only") -> dict:
+        """Load the landscape and write it as a JSON-LD extract.
+
+        Loads exactly what `harvest()` loads, and then stores it rather than
+        rendering it. Nothing is filtered: the allowlist is applied by stage 2,
+        so a change to it costs a re-render and no requests at all.
+
+        `model-only` reads the shards and index files. `full` would add
+        per-view geometry and is refused here rather than silently producing a
+        model-only extract labelled `full`.
+        """
+        from bianlib import extract as E
+
+        if mode == "full":
+            raise NotImplementedError(
+                "mode 'full' stores per-view geometry, which is not "
+                "implemented yet. Run with mode 'model-only'.")
+
+        fetcher = Fetcher(self.base)
+        model = L.Landscape(self.base, object_view=self.object_view).load(fetcher)
+        fetcher.close()
+
+        doc = E.build(model, self.id, mode=mode)
+        summary = E.write(doc, outdir / "extract.jsonld")
+
+        status = doc["status"]
+        print(f"  extract: {summary['objects']} objects, "
+              f"{summary['relations']} relations, "
+              f"{summary['views']} views, "
+              f"{summary['view_members']} memberships", flush=True)
+        print(f"  size   : {summary['bytes'] / 1024 / 1024:.1f} MB "
+              f"({summary['bytes']} bytes)", flush=True)
+        print(f"  content: {summary['content_digest'][:16]}", flush=True)
+        print(f"  file   : {summary['file_digest'][:16]}", flush=True)
+        print(f"  notation unresolved: {status['notation_unresolved']} of "
+              f"{summary['objects']}", flush=True)
+        print(f"  models : {status['models']}   "
+              f"geometry: {status['geometry']}", flush=True)
+        if status["malformed_objects"]:
+            print(f"  malformed objects skipped: "
+                  f"{status['malformed_objects']}", flush=True)
+        return summary
+
     # -- harvest ---------------------------------------------------------
 
     def harvest(self, outdir: Path) -> HarvestResult:

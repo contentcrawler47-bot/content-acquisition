@@ -8,6 +8,7 @@ sources cannot break each other by being added or removed.
     python run.py list
     python run.py validate bian             # CAN WE EXTRACT? (no Drive involved)
     python run.py harvest bian
+    python run.py extract bian             # STAGE 1: store the model as data
     python run.py publish bian [--dry-run]  # CAN WE PUBLISH? (Drive only)
     python run.py check-publish             # Drive credentials/reachability
     python run.py run bian [--publish]      # harvest + validate (+ publish)
@@ -33,6 +34,9 @@ from .source import Source
 REPO = Path(__file__).resolve().parent.parent
 SOURCES_DIR = REPO / "sources"
 OUT = REPO / "out"
+#: Stage 1 output. Separate from out/<id>/, which write_bundles empties
+#: on every harvest — an extract must not be destroyed by a render.
+EXTRACT_OUT = OUT / "_extract"
 
 
 def discover() -> dict[str, Source]:
@@ -100,6 +104,31 @@ def cmd_harvest(sources, args) -> int:
         print(f"    {cat:<28} {n:>6}", flush=True)
     for note in result.notes:
         print(f"  note: {note}", flush=True)
+    return 0
+
+
+def cmd_extract(sources, args) -> int:
+    """Stage 1. Acquire the source's model and store it as structured data.
+
+    Deliberately does not render, filter or publish. The extract is what
+    stage 2 reads, so that a renderer or allowlist change costs a re-render
+    rather than another pass over someone else's web server.
+    """
+    s = sources[args.source]
+    missing = s.missing_secrets()
+    if missing:
+        print(f"Cannot extract {s.id}: missing {', '.join(missing)}",
+              file=sys.stderr)
+        return 2
+    outdir = reset_dir(EXTRACT_OUT / s.id)
+    print(f"Extracting {s} -> {outdir}", flush=True)
+    try:
+        s.build_extract(outdir, mode=args.mode)
+    except NotImplementedError as e:
+        print(f"\n  {e}", file=sys.stderr)
+        print("  Stage 1 is optional; this source has not adopted it.",
+              file=sys.stderr)
+        return 2
     return 0
 
 
@@ -270,6 +299,11 @@ def main(argv=None) -> int:
 
     sub.add_parser("list", help="show configured sources")
     with_source(sub.add_parser("harvest", help="acquire content"))
+    e = with_source(sub.add_parser(
+        "extract", help="STAGE 1: store the source model as data"))
+    e.add_argument("--mode", choices=["model-only", "full"],
+                   default="model-only",
+                   help="model-only reads no view pages")
     v = with_source(sub.add_parser(
         "validate", help="check content can be EXTRACTED (no Drive)"))
     v.add_argument("--strict", action="store_true", help="warnings fail too")
@@ -291,6 +325,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     handler = {
         "list": cmd_list, "harvest": cmd_harvest, "validate": cmd_validate,
+        "extract": cmd_extract,
         "publish": cmd_publish, "run": cmd_run, "reindex": cmd_reindex,
         "check-publish": cmd_check_publish,
     }[args.cmd]
