@@ -131,19 +131,21 @@ class BianSource(BaseSource):
         fetcher.close()
 
         doc = E.build(model, self.id, mode=mode)
-        summary = E.write(doc, outdir / "extract.jsonld")
+        summary = E.write(doc, outdir)
 
         status = doc["status"]
-        print(f"  extract: {summary['objects']} objects, "
-              f"{summary['relations']} relations, "
-              f"{summary['views']} views, "
-              f"{summary['view_members']} memberships", flush=True)
-        print(f"  size   : {summary['bytes'] / 1024 / 1024:.1f} MB "
-              f"({summary['bytes']} bytes)", flush=True)
+        counts = summary["parts"]
+        print(f"  extract: {counts['objects']} objects, "
+              f"{counts['relations']} relations, "
+              f"{counts['views']} views, "
+              f"{counts['view_members']} memberships", flush=True)
+        for part, size in summary["part_bytes"].items():
+            print(f"    {part:<14} {size / 1024 / 1024:>8.1f} MB", flush=True)
+        print(f"  total  : {summary['bytes'] / 1024 / 1024:.1f} MB "
+              f"across {summary['files']} files", flush=True)
         print(f"  content: {summary['content_digest'][:16]}", flush=True)
-        print(f"  file   : {summary['file_digest'][:16]}", flush=True)
         print(f"  notation unresolved: {status['notation_unresolved']} of "
-              f"{summary['objects']}", flush=True)
+              f"{counts['objects']}", flush=True)
         print(f"  models : {status['models']}   "
               f"geometry: {status['geometry']}", flush=True)
         if status["malformed_objects"]:

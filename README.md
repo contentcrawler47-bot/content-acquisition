@@ -96,7 +96,7 @@ python3 run.py run <source> --publish    validate then publish
 python3 run.py reindex                   rebuild content/index.md
 
 python3 tools/join_report.py out/bian-v14 out/bian-apis-v14 --min-rate 99
-python3 tools/check_extract.py out/_extract/bian-v14/extract.jsonld
+python3 tools/check_extract.py out/_extract/bian-v14
 python3 tools/repo_manifest.py --verify
 ```
 
@@ -119,9 +119,18 @@ they need to report a count against a denominator — "1,900 of 2,285 views
 resolve, 385 are not objects in the model" — where a conformance boolean would
 not say enough to act on.
 
-Schema validation needs `jsonschema`, which no workflow installs yet. Until one
-does the structural check reports SKIP and says so; `--require-schema` turns
-its absence into a failure.
+The extract is several files, not one: an index plus a file per bulk
+collection (`objects`, `relations`, `views`, `view_members`). The landscape is
+148.5 MB of raw payload, so a single pretty-printed document would be awkward
+to load, to sync and to read. Each part carries its own count and content
+digest, the index carries both again, and `check_extract.py` compares them —
+declaring a number twice is only useful if something checks it. Byte digests
+live in `EXTRACT.sha256` beside the files, because "did the file change" and
+"did the content change" are different questions.
+
+Schema validation needs `jsonschema`, pinned in `requirements-extract.txt` and
+installed only by the extract workflow. When it is absent the structural check
+reports SKIP and names itself; `--require-schema` makes that a failure.
 
 Stage 1 is currently `model-only`: shards and index files, no view pages.
 `--mode full` would add per-view geometry and is refused rather than silently

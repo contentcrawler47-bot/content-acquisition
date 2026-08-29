@@ -1,0 +1,102 @@
+name: Extract — BIAN v14 (stage 1)
+
+# STAGE 1 only: acquire the landscape model and store it as data. Renders
+# nothing, filters nothing, and publishes nothing.
+#
+# References NO Google Drive secrets, so a red run here is always a source or
+# code problem. The extract is uploaded as an artifact rather than synced to
+# Drive: how large it is, and therefore whether a Drive scope for it is
+# viable, is exactly what the first runs are meant to answer.
+#
+# Nothing here applies the category allowlist. That is deliberate and is the
+# point of the split — selection belongs to stage 2, so changing
+# INCLUDE_CATEGORIES becomes a re-render against a stored extract rather than
+# 47 more shard requests against someone else's web server.
+#
+# Scope is model-only: the shards and index files, about a minute of fetching.
+# Per-view geometry needs a decision about the ArchiMate node and edge shape
+# that has not been taken, so `full` is refused rather than silently producing
+# a model-only extract labelled otherwise.
+#
+# Reports counts, sizes and digests only, never acquired text: Actions logs on
+# a public repo are world-readable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Extract scope
+        type: choice
+        options:
+          - model-only
+          - full
+        default: model-only
+      require_schema:
+        description: Fail if jsonschema is unavailable
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extract-bian-v14
+  cancel-in-progress: true
+
+env:
+  SOURCE_ID: bian-v14
+  # The canary and floors are stated here rather than hidden in the tool so a
+  # reader of the run can see what was demanded of it. They are bounds, not
+  # equalities: a gate that catches a broken mechanism, not one demanding
+  # perfection. Never widen one to turn a red run green.
+  CANARY_ID: "34300"
+  CANARY_NAME: Consumer Loan
+  MIN_OBJECTS: "100000"
+  MIN_VIEWS: "2000"
+  MIN_SERVICE_DOMAINS: "340"
+
+jobs:
+  extract:
+    name: Can we store the BIAN model as data?
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Pinned, because requirements-extract.txt hashes a compiled wheel
+      # (rpds-py) built per interpreter version. Taking whatever Python the
+      # runner image ships would mean an image bump silently selecting a wheel
+      # with no matching hash.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned validation dependencies
+        run: python3 -m pip install --require-hashes -r requirements-extract.txt
+
+      - name: Build the extract
+        run: python3 run.py extract "$SOURCE_ID" --mode "${{ inputs.mode }}"
+
+      - name: Check the extract
+        run: |
+          python3 tools/check_extract.py "out/_extract/$SOURCE_ID" \
+            ${{ inputs.require_schema && '--require-schema' || '' }} \
+            --canary-id "$CANARY_ID" \
+            --canary-name "$CANARY_NAME" \
+            --min-objects "$MIN_OBJECTS" \
+            --min-views "$MIN_VIEWS" \
+            --min-service-domains "$MIN_SERVICE_DOMAINS"
+
+      # Kept whether or not the checks passed: a failed extract is the thing
+      # you most want to look at, and re-running it costs another pass over
+      # bian.org.
+      - name: Upload the extract
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: extract-${{ env.SOURCE_ID }}
+          path: out/_extract/${{ env.SOURCE_ID }}/
+          retention-days: 30
+          if-no-files-found: error

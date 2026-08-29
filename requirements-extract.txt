@@ -1,0 +1,30 @@
+# Dependencies for stage 1 extract validation only.
+#
+# Kept separate from requirements.txt so the API source's install is
+# unchanged: only the extract workflow pays for these, and a problem here
+# cannot affect a harvest that does not use them.
+#
+# jsonschema validates the extract against schema/bian-extract.schema.json,
+# which is the contract between stage 1 and stage 2. Hand-rolling a validator
+# for a spec this size would be the same mistake as hand-rolling a YAML
+# parser, so this follows the pattern already settled for pyyaml, rclone and
+# plantuml.jar: pinned and hash-checked, installed with --require-hashes so a
+# substituted artefact fails the install step rather than running.
+#
+# rpds-py ships compiled wheels per interpreter version, so these hashes are
+# for cp312 on manylinux x86_64. That is why the workflow pins Python with
+# actions/setup-python instead of taking whatever the runner image happens to
+# provide — an image bump would otherwise select a wheel with no matching
+# hash and fail the install with a confusing message.
+jsonschema==4.26.0 \
+    --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
+jsonschema-specifications==2025.9.1 \
+    --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe
+referencing==0.37.0 \
+    --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231
+rpds-py==2026.6.3 \
+    --hash=sha256:ecabd69db66de867690f9797f2f8fa27ba501bbc24540cbdbdc649cd15888ba6
+attrs==26.1.0 \
+    --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

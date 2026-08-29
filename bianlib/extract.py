@@ -316,44 +316,157 @@ def _models_list(insite_models) -> list:
 
 # --- serialising -----------------------------------------------------------
 
+#: The bulk collections, each written to its own file. Measured on 29 August
+#: 2026 the landscape is 148.5 MB of raw payload across 47 shards and the
+#: index files; a single pretty-printed document holding all of it is awkward
+#: for stage 2 to load, awkward to sync, and effectively unreadable through
+#: the Drive connector — which was one of the reasons for publishing it.
+#:
+#: Splitting also lets stage 2 read only what it needs and lets one part be
+#: verified on its own.
+PARTS = ("objects", "relations", "views", "view_members")
+
+PART_FILE = {
+    "objects": "objects.jsonld",
+    "relations": "relations.jsonld",
+    "views": "views.jsonld",
+    "view_members": "view-members.jsonld",
+}
+
+INDEX_FILE = "extract.jsonld"
+
+#: Sidecar listing the sha256 of every file written, including the index.
+#: Byte digests live here and content digests live in the index, because they
+#: answer different questions: "did the file change" and "did the content
+#: change". A digest written into the file it describes changes the thing it
+#: describes, so this stays outside.
+SIDECAR_FILE = "EXTRACT.sha256"
+
+#: Small enough to keep inline in the index, and wanted by anything reading it
+#: for orientation rather than for bulk.
+INLINE = ("categories", "notations", "models")
+
+
 def _canonical(value) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False,
                       separators=(",", ":"))
 
 
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def part_digest(items: list) -> str:
+    """Content digest of one part, independent of how it is laid out on disk."""
+    return _sha256(_canonical(items))
+
+
 def content_digest(doc: dict) -> str:
     """Digest over the content, excluding run metadata.
 
-    `fetched_at` changes every run, so a digest over the whole document could
-    never answer "did anything actually change". This one can, and it is what
-    makes the determinism check in stage 2 meaningful.
+    Built from the parts' own digests rather than from the whole document, so
+    it can be recomputed by a reader holding only the index and the part
+    digests, and so a changed part names itself.
+
+    `fetched_at` changes every run and is excluded, which is what lets this
+    answer "did anything actually change" — the question the determinism check
+    in stage 2 asks.
     """
-    payload = {k: v for k, v in doc.items()
-               if k in ("objects", "relations", "views", "view_members",
-                        "categories", "notations", "models")}
-    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+    payload = {"parts": {name: part_digest(doc.get(name, []) or [])
+                         for name in PARTS}}
+    for name in INLINE:
+        payload[name] = doc.get(name, [])
+    return _sha256(_canonical(payload))
 
 
-def write(doc: dict, path) -> dict:
-    """Write the extract and its sidecar digest. Returns a summary.
+def _part_text(doc_id: str, name: str, items: list) -> str:
+    """One part file: a JSON-LD document with one item per line.
 
-    The digest lives beside the file, never inside it: a digest written into
-    the document it describes changes the thing it describes.
+    Not pretty-printed — at this scale indentation is megabytes — but not a
+    single line either, because a file nobody can read or grep is a file
+    nobody will check. One compact item per line is valid JSON, diffable, and
+    close to the compact size.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True)
-    path.write_text(text, encoding="utf-8")
-    raw = path.read_bytes()
-    file_digest = hashlib.sha256(raw).hexdigest()
-    (path.parent / (path.name + ".sha256")).write_text(
-        f"{file_digest}  {path.name}\n", encoding="utf-8")
-    return {
-        "path": str(path),
-        "bytes": len(raw),
-        "file_digest": file_digest,
-        "content_digest": doc.get("content_digest", ""),
-        "objects": len(doc.get("objects", [])),
-        "relations": len(doc.get("relations", [])),
-        "views": len(doc.get("views", [])),
-        "view_members": len(doc.get("view_members", [])),
+    header = {
+        "@context": context(),
+        "id": f"{doc_id}:part:{name}",
+        "type": "ExtractPart",
+        "part": name,
+        "extract": doc_id,
+        "count": len(items),
+        "content_digest": part_digest(items),
     }
+    fields = ",\n ".join(
+        f"{json.dumps(k)}: {json.dumps(v, ensure_ascii=False, sort_keys=True)}"
+        for k, v in sorted(header.items()))
+    if items:
+        body = "[\n  " + ",\n  ".join(_canonical(i) for i in items) + "\n ]"
+    else:
+        body = "[]"
+    return "{\n " + fields + ",\n " + json.dumps(name) + ": " + body + "\n}\n"
+
+
+def write(doc: dict, outdir) -> dict:
+    """Write the index and one file per part. Returns a summary.
+
+    Takes a directory rather than a file path: the extract is now several
+    files that must be read together, and handing back a single path would
+    invite a caller to treat one of them as the whole thing.
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+    doc_id = doc.get("id", "")
+
+    written, parts_meta, total_bytes = {}, [], 0
+    for name in PARTS:
+        items = doc.get(name, []) or []
+        text = _part_text(doc_id, name, items)
+        path = outdir / PART_FILE[name]
+        path.write_text(text, encoding="utf-8")
+        raw = path.read_bytes()
+        written[PART_FILE[name]] = _sha256(text)
+        total_bytes += len(raw)
+        parts_meta.append({
+            "part": name,
+            "file": PART_FILE[name],
+            "count": len(items),
+            "content_digest": part_digest(items),
+            "bytes": len(raw),
+        })
+
+    index = {k: v for k, v in doc.items() if k not in PARTS}
+    index["parts"] = parts_meta
+    index_path = outdir / INDEX_FILE
+    index_text = json.dumps(index, ensure_ascii=False, indent=1,
+                            sort_keys=True) + "\n"
+    index_path.write_text(index_text, encoding="utf-8")
+    written[INDEX_FILE] = _sha256(index_text)
+    total_bytes += len(index_path.read_bytes())
+
+    (outdir / SIDECAR_FILE).write_text(
+        "".join(f"{written[f]}  {f}\n" for f in sorted(written)),
+        encoding="utf-8")
+
+    return {
+        "dir": str(outdir),
+        "bytes": total_bytes,
+        "content_digest": doc.get("content_digest", ""),
+        "files": len(written),
+        "parts": {m["part"]: m["count"] for m in parts_meta},
+        "part_bytes": {m["part"]: m["bytes"] for m in parts_meta},
+    }
+
+
+def read(outdir) -> dict:
+    """Load a split extract back into one document.
+
+    The inverse of write(), used by stage 2 and by tools/check_extract.py so
+    that both read the extract the same way rather than each growing its own
+    idea of the layout.
+    """
+    index = json.loads((outdir / INDEX_FILE).read_text(encoding="utf-8"))
+    doc = {k: v for k, v in index.items() if k != "parts"}
+    for meta in index.get("parts", []):
+        payload = json.loads(
+            (outdir / meta["file"]).read_text(encoding="utf-8"))
+        doc[meta["part"]] = payload.get(meta["part"], [])
+    return doc

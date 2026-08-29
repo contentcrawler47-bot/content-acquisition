@@ -2,10 +2,14 @@
 """
 Check a stage 1 extract: structure, then referential integrity.
 
-    python3 tools/check_extract.py out/_extract/bian-v14/extract.jsonld
-    python3 tools/check_extract.py extract.jsonld --require-schema
-    python3 tools/check_extract.py extract.jsonld --canary-id 34300 \
+    python3 tools/check_extract.py out/_extract/bian-v14
+    python3 tools/check_extract.py out/_extract/bian-v14 --require-schema
+    python3 tools/check_extract.py out/_extract/bian-v14 --canary-id 34300 \
         --canary-name "Consumer Loan" --min-objects 100000
+
+Takes the extract DIRECTORY. The extract is an index plus one file per bulk
+collection, and they have to be read together — pointing this at one part
+file would validate a quarter of the graph and say nothing about the rest.
 
 Two kinds of check, because they catch different things.
 
@@ -81,11 +85,97 @@ class Result:
         return any(s == FAIL for s, _, _ in self.rows)
 
 
-def load(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+def load(outdir: Path) -> tuple[dict, dict]:
+    """The merged document, and the raw file contents keyed by filename.
+
+    Reading goes through bianlib.extract.read so this tool and stage 2 cannot
+    grow two different ideas of the layout.
+    """
+    from bianlib import extract as E
+    doc = E.read(outdir)
+    raw = {}
+    index = json.loads(
+        (outdir / E.INDEX_FILE).read_text(encoding="utf-8"))
+    raw[E.INDEX_FILE] = index
+    for meta in index.get("parts", []):
+        raw[meta["file"]] = json.loads(
+            (outdir / meta["file"]).read_text(encoding="utf-8"))
+    return doc, raw
 
 
-def check_schema(doc: dict, result: Result, require: bool) -> None:
+def check_parts(outdir: Path, raw: dict, result: Result) -> None:
+    """The index and the part files must agree, and each part must be intact.
+
+    Counts and digests are declared in two places by design — the index says
+    what it expects each part to hold, and each part says what it holds. That
+    is only useful if something compares them.
+    """
+    from bianlib import extract as E
+
+    index = raw.get(E.INDEX_FILE, {})
+    declared = {m["part"]: m for m in index.get("parts", [])}
+    missing = [p for p in E.PARTS if p not in declared]
+    if missing:
+        result.add(FAIL, "index declares every part",
+                   f"missing: {', '.join(missing)}")
+    else:
+        result.add(PASS, "index declares every part",
+                   f"{len(declared)} of {len(E.PARTS)}")
+
+    agree = digests = 0
+    for name, meta in sorted(declared.items()):
+        payload = raw.get(meta["file"], {})
+        items = payload.get(name, [])
+        if len(items) == meta["count"] == payload.get("count"):
+            agree += 1
+        else:
+            result.add(FAIL, f"part {name} count agrees",
+                       f"index {meta['count']}, header "
+                       f"{payload.get('count')}, actual {len(items)}")
+        recomputed = E.part_digest(items)
+        if recomputed == meta["content_digest"] == payload.get("content_digest"):
+            digests += 1
+        else:
+            result.add(FAIL, f"part {name} digest reproduces",
+                       f"recomputed {recomputed[:16]}, index "
+                       f"{str(meta['content_digest'])[:16]}, header "
+                       f"{str(payload.get('content_digest'))[:16]}")
+    if declared:
+        result.count(agree, len(declared), "part counts agree with the index",
+                     expected=len(declared))
+        result.count(digests, len(declared), "part digests reproduce",
+                     expected=len(declared))
+
+    # The sidecar records the bytes on disk, which the content digests do not.
+    sidecar = outdir / E.SIDECAR_FILE
+    if not sidecar.is_file():
+        result.add(FAIL, "sidecar digests present", f"{E.SIDECAR_FILE} missing")
+        return
+    import hashlib
+    lines = [l.split("  ", 1) for l in
+             sidecar.read_text(encoding="utf-8").splitlines() if l.strip()]
+    ok = 0
+    for want, fname in lines:
+        path = outdir / fname
+        if not path.is_file():
+            result.add(FAIL, "sidecar digests match", f"{fname} missing")
+            continue
+        got = hashlib.sha256(path.read_bytes()).hexdigest()
+        if got == want:
+            ok += 1
+        else:
+            result.add(FAIL, "sidecar digests match",
+                       f"{fname}: {got[:16]} != {want[:16]}")
+    result.count(ok, len(lines), "sidecar file digests match",
+                 expected=len(lines))
+
+
+def check_schema(raw: dict, result: Result, require: bool) -> None:
+    """Validate the index and every part file against the same schema.
+
+    The schema branches on `type`, so one file covers both shapes and a part
+    cannot be validated as an index by accident.
+    """
     try:
         import jsonschema
     except ImportError:
@@ -100,20 +190,26 @@ def check_schema(doc: dict, result: Result, require: bool) -> None:
         return
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     validator = jsonschema.Draft202012Validator(schema)
-    errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
-    if not errors:
-        result.add(PASS, "structure matches JSON Schema",
-                   f"{SCHEMA_PATH.name}")
-        return
-    # Name the first few precisely; a hundred identical errors from one bad
-    # field is one problem, not a hundred.
-    for err in errors[:5]:
-        where = "/".join(str(p) for p in err.path) or "(root)"
-        result.add(FAIL, "structure matches JSON Schema",
-                   f"{where}: {err.message[:160]}")
-    if len(errors) > 5:
-        result.add(FAIL, "structure matches JSON Schema",
-                   f"... and {len(errors) - 5} further errors")
+    clean, shown = 0, 0
+    for fname, payload in sorted(raw.items()):
+        errors = sorted(validator.iter_errors(payload),
+                        key=lambda e: list(e.path))
+        if not errors:
+            clean += 1
+            continue
+        # Name the first few precisely; a hundred identical errors from one
+        # bad field is one problem, not a hundred.
+        for err in errors[:3]:
+            where = "/".join(str(p) for p in err.path) or "(root)"
+            result.add(FAIL, "structure matches JSON Schema",
+                       f"{fname} {where}: {err.message[:140]}")
+            shown += 1
+        if len(errors) > 3:
+            result.add(FAIL, "structure matches JSON Schema",
+                       f"{fname}: and {len(errors) - 3} further errors")
+    if clean == len(raw):
+        result.count(clean, len(raw), "structure matches JSON Schema",
+                     expected=len(raw))
 
 
 def check_integrity(doc: dict, result: Result, args) -> None:
@@ -270,16 +366,18 @@ def check_integrity(doc: dict, result: Result, args) -> None:
                    f"{type(e).__name__}: {e}")
 
 
-def report(result: Result, path: Path, doc: dict) -> int:
+def report(result: Result, outdir: Path, doc: dict) -> int:
     line = "=" * 70
-    print(f"\n{line}\n  Extract check: {path.name}\n{line}\n")
+    print(f"\n{line}\n  Extract check: {outdir}\n{line}\n")
     meta = doc.get("extract", {})
     print(f"  source      : {meta.get('source_id')}")
     print(f"  mode        : {meta.get('mode')}")
     print(f"  fetched at  : {meta.get('fetched_at')}")
     print(f"  schema      : {meta.get('schema_version')}   "
           f"parser: {meta.get('parser_version')}")
-    print(f"  size        : {path.stat().st_size / 1024 / 1024:.1f} MB")
+    total = sum(f.stat().st_size for f in outdir.glob("*.jsonld"))
+    print(f"  size        : {total / 1024 / 1024:.1f} MB across "
+          f"{len(list(outdir.glob('*.jsonld')))} files")
     print(f"  content     : {str(doc.get('content_digest'))[:16]}\n")
     for status, name, detail in result.rows:
         print(f"  [{status}] {name:<44} {detail}")
@@ -301,7 +399,8 @@ def report(result: Result, path: Path, doc: dict) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("path", type=Path, help="extract .jsonld file")
+    ap.add_argument("path", type=Path,
+                    help="the extract directory, e.g. out/_extract/bian-v14")
     ap.add_argument("--require-schema", action="store_true",
                     help="fail if jsonschema is not installed")
     ap.add_argument("--canary-id", default="")
@@ -315,23 +414,28 @@ def main(argv=None) -> int:
                     help="known-unresolvable relation targets")
     args = ap.parse_args(argv)
 
-    if not args.path.is_file():
-        print(f"No such extract: {args.path}", file=sys.stderr)
+    outdir = args.path
+    if outdir.is_file():
+        # Pointed at the index rather than the directory holding it.
+        outdir = outdir.parent
+    if not outdir.is_dir():
+        print(f"No such extract directory: {args.path}", file=sys.stderr)
         return 2
     try:
-        doc = load(args.path)
+        doc, raw = load(outdir)
     except Exception as e:
-        print(f"Could not read {args.path}: {type(e).__name__}: {e}",
-              file=sys.stderr)
+        print(f"Could not read the extract in {outdir}: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
     result = Result()
-    check_schema(doc, result, args.require_schema)
+    check_schema(raw, result, args.require_schema)
     try:
+        check_parts(outdir, raw, result)
         check_integrity(doc, result, args)
     except Exception as e:
         result.add(FAIL, "integrity checks ran", f"{type(e).__name__}: {e}")
-    return report(result, args.path, doc)
+    return report(result, outdir, doc)
 
 
 if __name__ == "__main__":
