@@ -388,6 +388,70 @@ def check_integrity(doc: dict, result: Result, args) -> None:
                      "model view counts agree",
                      expected=len(doc.get("models", [])))
 
+    # Geometry. Only meaningful when pages were fetched; when they were not,
+    # say so with the denominator rather than passing silently.
+    status = doc.get("status", {})
+    gnodes = doc.get("geometry_nodes", [])
+    gedges = doc.get("geometry_edges", [])
+    if status.get("geometry") != "present":
+        result.add(PASS, "view geometry",
+                   f"not fetched (mode {doc.get('extract', {}).get('mode')})")
+    else:
+        geo_views = {v["id"] for v in views if v.get("has_geometry")}
+        result.count(len(geo_views), status.get("views_with_geometry", 0),
+                     "views flagged as carrying geometry",
+                     expected=status.get("views_with_geometry", 0))
+
+        # Every node and edge must name a view that exists.
+        ok = sum(1 for n in gnodes if n.get("view") in view_ids)
+        result.count(ok, len(gnodes), "geometry nodes name a known view",
+                     expected=len(gnodes))
+        ok = sum(1 for e in gedges if e.get("view") in view_ids)
+        result.count(ok, len(gedges), "geometry edges name a known view",
+                     expected=len(gedges))
+
+        # A node's object must resolve. This is the join that makes geometry
+        # useful: without it a box has a shape and no type.
+        # Bounded, not an equality. A page draws blocks the model does not
+        # contain: view 54486 carries two `CommandDefinition` controls whose
+        # ids are among the 15 memberships that already resolve to nothing.
+        # Those are the page's own furniture, not missing content.
+        with_obj = [n for n in gnodes if n.get("object")]
+        ok = sum(1 for n in with_obj if n["object"] in object_ids)
+        dangling = len(with_obj) - ok
+        result.add(PASS if dangling <= args.allow_unresolved_members else FAIL,
+                   "geometry nodes resolve to an object",
+                   f"{ok} of {len(with_obj)}, {dangling} to nothing, "
+                   f"allowed {args.allow_unresolved_members}")
+        if gnodes:
+            share = 100.0 * len(with_obj) / len(gnodes)
+            result.add(PASS if share >= 90 else FAIL,
+                       "geometry nodes carry an object",
+                       f"{len(with_obj)} of {len(gnodes)} ({share:.1f}%)")
+
+        # parent_id and edge endpoints reference node ids within the same view.
+        by_view = {}
+        for n in gnodes:
+            by_view.setdefault(n["view"], set()).add(n["node_id"])
+        parented = [n for n in gnodes if n.get("parent_id")]
+        ok = sum(1 for n in parented
+                 if n["parent_id"] in by_view.get(n["view"], ()))
+        result.count(ok, len(parented),
+                     "containment resolves within its view",
+                     expected=len(parented))
+        ends = [e for e in gedges if e.get("from_node") or e.get("to_node")]
+        ok = sum(1 for e in ends
+                 if e.get("from_node") in by_view.get(e["view"], ())
+                 and e.get("to_node") in by_view.get(e["view"], ()))
+        result.count(ok, len(ends), "edge endpoints resolve to nodes",
+                     expected=len(ends))
+
+        # A page that parsed into nothing must not look like an empty page.
+        result.add(PASS if status.get("geometry_unboxed", 0) == 0 else WARN,
+                   "blocks without a box",
+                   f"{status.get('geometry_unboxed', 0)} across "
+                   f"{status.get('views_with_geometry', 0)} views")
+
     # The allowlist is imported, never restated. This reports what stage 2
     # would select from this extract without running stage 2.
     selected = sum(1 for o in objects

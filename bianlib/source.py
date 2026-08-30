@@ -106,7 +106,69 @@ class BianSource(BaseSource):
                 optional=True),
         ]
 
+    #: View types whose PAGE is worth a request. Geometry is only worth
+    #: fetching where arrangement carries meaning that membership does not.
+    #:
+    #: Measured 30 August 2026 on four saved pages. A Total view earns it: 54486
+    #: holds 341 service-domain boxes inside 51 nested grouping boxes, and that
+    #: containment IS the value chain. A Capability map view does not: 53221 is
+    #: 12 nodes, no edges, every member already kept by the allowlist, so its
+    #: page adds a layout nobody will render. Architecture overview is a
+    #: navigation index at 0% coverage.
+    #:
+    #: Class and sequence diagrams are excluded because the existing harvest
+    #: already converts them; adding them here would double the request count
+    #: to no purpose.
+    GEOMETRY_VIEW_TYPES = (
+        "Total view", "Total view new style", "ArchiMate total view",
+        "Information structure view",
+    )
+
     # -- stage 1: extract -------------------------------------------------
+
+    def _fetch_geometry(self, model, fetcher_factory) -> dict:
+        """Fetch and parse the pages whose arrangement is worth storing.
+
+        A separate Fetcher so page requests are paced independently of the
+        index files already read, and so a geometry failure cannot leave the
+        model half-loaded. Progress is reported every 50 views: a silent
+        ten-minute step is indistinguishable from a hung one.
+        """
+        from bianlib import geometry as GEO
+
+        wanted = [vid for vid in sorted(model.insite_views, key=str)
+                  if model.categories.get(str(vid)) in self.GEOMETRY_VIEW_TYPES]
+        print(f"  geometry: {len(wanted)} views to fetch "
+              f"({', '.join(self.GEOMETRY_VIEW_TYPES)})", flush=True)
+
+        out, failed = {}, 0
+        fetcher = fetcher_factory(self.base)
+        try:
+            for n, vid in enumerate(wanted, 1):
+                try:
+                    resp = fetcher.get(L.view_url(self.base, vid),
+                                       conditional=False)
+                    if resp.status != 200 or not resp.text.strip():
+                        failed += 1
+                        continue
+                    g = GEO.parse_geometry(resp.text, vid)
+                except Exception as e:                      # noqa: BLE001
+                    print(f"    view {vid}: {type(e).__name__}", flush=True)
+                    failed += 1
+                    continue
+                if g["node_count"] or g["edge_count"]:
+                    out[str(vid)] = g
+                if n % 50 == 0 or n == len(wanted):
+                    print(f"    {n} of {len(wanted)} fetched, "
+                          f"{len(out)} with geometry, {failed} failed",
+                          flush=True)
+        finally:
+            fetcher.close()
+
+        # A page that yielded nothing is not the same as a page not fetched.
+        print(f"  geometry: {len(out)} of {len(wanted)} views parsed, "
+              f"{failed} failed", flush=True)
+        return out
 
     def build_extract(self, outdir: Path, mode: str = "model-only") -> dict:
         """Load the landscape and write it as a JSON-LD extract.
@@ -121,11 +183,6 @@ class BianSource(BaseSource):
         """
         from bianlib import extract as E
 
-        if mode == "full":
-            raise NotImplementedError(
-                "mode 'full' stores per-view geometry, which is not "
-                "implemented yet. Run with mode 'model-only'.")
-
         fetcher = Fetcher(self.base)
         model = L.Landscape(self.base, object_view=self.object_view).load(fetcher)
 
@@ -136,8 +193,13 @@ class BianSource(BaseSource):
         entries, models_url, tried = L.fetch_models(fetcher)
         fetcher.close()
 
+        geometry = {}
+        if mode == "full":
+            geometry = self._fetch_geometry(model, fetcher_factory=Fetcher)
+
         doc = E.build(model, self.id, mode=mode, insite_models=entries,
-                      models_url=models_url, models_tried=tried)
+                      models_url=models_url, models_tried=tried,
+                      geometry=geometry)
         summary = E.write(doc, outdir)
 
         status = doc["status"]
@@ -165,7 +227,14 @@ class BianSource(BaseSource):
             print(f"  models : NOT FETCHED after trying "
                   f"{', '.join(status['models_tried']) or 'nothing'}",
                   flush=True)
-        print(f"  geometry: {status['geometry']}", flush=True)
+        if status["geometry"] == "present":
+            print(f"  geometry: {status['views_with_geometry']} views, "
+                  f"{counts['geometry_nodes']} nodes, "
+                  f"{counts['geometry_edges']} edges, "
+                  f"{status['geometry_unboxed']} blocks without a box",
+                  flush=True)
+        else:
+            print("  geometry: not-fetched", flush=True)
         if status["malformed_objects"]:
             print(f"  malformed objects skipped: "
                   f"{status['malformed_objects']}", flush=True)

@@ -108,12 +108,14 @@
             "type": "object",
             "required": [
               "geometry",
+              "geometry_unboxed",
               "malformed_objects",
               "models",
               "models_tried",
               "models_url",
               "notation_unresolved",
               "unresolved_members",
+              "views_with_geometry",
               "views_with_model"
             ],
             "additionalProperties": true,
@@ -162,6 +164,14 @@
               "views_with_model": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "views_with_geometry": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "geometry_unboxed": {
+                "type": "integer",
+                "minimum": 0
               }
             }
           },
@@ -185,7 +195,7 @@
           },
           "parts": {
             "type": "array",
-            "minItems": 4,
+            "minItems": 6,
             "description": "One entry per collection, each listing its range partitions with the boundaries that define the partition function. Boundaries are cut at equal rank and published here, so placement is a lookup against this document rather than a computation a reader must reimplement.",
             "items": {
               "type": "object",
@@ -202,7 +212,9 @@
                     "objects",
                     "relations",
                     "views",
-                    "view_members"
+                    "view_members",
+                    "geometry_nodes",
+                    "geometry_edges"
                   ]
                 },
                 "count": {
@@ -266,7 +278,9 @@
               "objects",
               "relations",
               "views",
-              "view_members"
+              "view_members",
+              "geometry_nodes",
+              "geometry_edges"
             ]
           },
           "extract": {
@@ -313,6 +327,18 @@
           },
           "max_key": {
             "type": "integer"
+          },
+          "geometry_nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/geometryNode"
+            }
+          },
+          "geometry_edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/geometryEdge"
+            }
           }
         }
       }
@@ -606,6 +632,124 @@
         "bytes": {
           "type": "integer",
           "minimum": 0
+        }
+      }
+    },
+    "geometryNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "view",
+        "node_id",
+        "object",
+        "concept",
+        "label",
+        "x",
+        "y",
+        "w",
+        "h",
+        "parent_id"
+      ],
+      "description": "A drawn box. `concept` is the SHAPE the page used, not the type: 339 service domains on view 54486 are drawn as StrategyCapability. The type comes from the model, through `object`.",
+      "properties": {
+        "type": {
+          "const": "GeometryNode"
+        },
+        "view": {
+          "type": "string",
+          "pattern": "^urn:bian:[^:]+:view:"
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "object": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^urn:bian:[^:]+:object:"
+        },
+        "concept": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "w": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "h": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "parent_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "geometryEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "view",
+        "edge_id",
+        "object",
+        "concept",
+        "label",
+        "from_node",
+        "to_node"
+      ],
+      "properties": {
+        "type": {
+          "const": "GeometryEdge"
+        },
+        "view": {
+          "type": "string",
+          "pattern": "^urn:bian:[^:]+:view:"
+        },
+        "edge_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "object": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^urn:bian:[^:]+:object:"
+        },
+        "concept": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "from_node": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to_node": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     }

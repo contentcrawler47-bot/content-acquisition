@@ -45,12 +45,12 @@ from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
 #: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.3.0"
+SCHEMA_VERSION = "1.4.0"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
 #: reason: derived output must say what derived it.
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
 
 #: Scopes. `model-only` reads the shards and index files and no view pages,
 #: which is the whole landscape model in about a minute. `full` additionally
@@ -148,7 +148,7 @@ def _first_entry(obj) -> dict:
 
 def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
           insite_models=None, models_url: str = "",
-          models_tried: list | None = None) -> dict:
+          models_tried: list | None = None, geometry: dict | None = None) -> dict:
     """The extract document for a loaded landscape.
 
     Pure: takes a materialised model and returns a dict. No network, no disk,
@@ -266,6 +266,11 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
             })
 
     models = _models_list(insite_models)
+    geo_nodes, geo_edges = _geometry_records(source_id, geometry or {})
+    with_geometry = set(geometry or {})
+    for record in views:
+        if record["view_id"] in with_geometry:
+            record["has_geometry"] = True
 
     doc = {
         "@context": context(),
@@ -287,7 +292,10 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
             "models_url": models_url,
             "models_tried": list(models_tried or []),
             "views_with_model": sum(1 for v in views if v["model"]),
-            "geometry": "not-fetched",
+            "geometry": "present" if geometry else "not-fetched",
+            "views_with_geometry": len(geometry or {}),
+            "geometry_unboxed": sum(g.get("unboxed", 0)
+                                    for g in (geometry or {}).values()),
             "notation_unresolved": notation_missing,
             "malformed_objects": len(malformed),
             "unresolved_members": unresolved_members,
@@ -300,12 +308,54 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
         "relations": relations,
         "views": views,
         "view_members": view_members,
+        "geometry_nodes": geo_nodes,
+        "geometry_edges": geo_edges,
         "models": models,
     }
     if malformed:
         doc["status"]["malformed_object_ids"] = sorted(malformed)[:50]
     doc["content_digest"] = content_digest(doc)
     return doc
+
+
+def _geometry_records(source_id: str, geometry: dict) -> tuple[list, list]:
+    """Flatten per-view geometry into two addressable collections.
+
+    Node and edge ids are the SVG's own `bizzid`, unique within a view but not
+    across views, so each record carries its view and the pair is the key.
+    `object_id` is what resolves into the model; `concept` is the shape that
+    was drawn and is deliberately NOT a type -- 339 service domains on view
+    54486 are drawn as `StrategyCapability`.
+    """
+    nodes, edges = [], []
+    for vid, g in sorted(geometry.items()):
+        view_urn = _urn(source_id, "view", vid)
+        for n in g.get("nodes", []):
+            nodes.append({
+                "type": "GeometryNode",
+                "view": view_urn,
+                "node_id": n["node_id"],
+                "object": (_urn(source_id, "object", n["object_id"])
+                           if n.get("object_id") else None),
+                "concept": n["concept"],
+                "label": n.get("label") or "",
+                "x": round(float(n["x"]), 2), "y": round(float(n["y"]), 2),
+                "w": round(float(n["w"]), 2), "h": round(float(n["h"]), 2),
+                "parent_id": n.get("parent_id"),
+            })
+        for e in g.get("edges", []):
+            edges.append({
+                "type": "GeometryEdge",
+                "view": view_urn,
+                "edge_id": e["edge_id"],
+                "object": (_urn(source_id, "object", e["object_id"])
+                           if e.get("object_id") else None),
+                "concept": e["concept"],
+                "label": e.get("label") or "",
+                "from_node": e.get("from_node"),
+                "to_node": e.get("to_node"),
+            })
+    return nodes, edges
 
 
 def _models_index(entries) -> dict:
@@ -363,7 +413,8 @@ def _models_list(entries) -> list:
 #: one. Recomputing is safe because identity is location-free: nothing anywhere
 #: references a partition, so an object landing elsewhere next run breaks
 #: nothing. The cost is that partition digests are not comparable across runs.
-PARTS = ("objects", "relations", "views", "view_members")
+PARTS = ("objects", "relations", "views", "view_members",
+         "geometry_nodes", "geometry_edges")
 
 #: The integer each part is partitioned on. Objects and their relations share
 #: the object id, so a relation sits in the partition matching its source.
@@ -372,6 +423,8 @@ PART_KEY = {
     "relations": lambda i: i["source"].rsplit(":", 1)[1],
     "views": lambda i: i["view_id"],
     "view_members": lambda i: i["view"].rsplit(":", 1)[1],
+    "geometry_nodes": lambda i: i["view"].rsplit(":", 1)[1],
+    "geometry_edges": lambda i: i["view"].rsplit(":", 1)[1],
 }
 
 PART_SLUG = {
@@ -379,6 +432,8 @@ PART_SLUG = {
     "relations": "relations",
     "views": "views",
     "view_members": "view-members",
+    "geometry_nodes": "geometry-nodes",
+    "geometry_edges": "geometry-edges",
 }
 
 #: Items per partition. At the measured mean sizes this puts objects near

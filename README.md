@@ -145,9 +145,24 @@ Schema validation needs `jsonschema`, pinned in `requirements-extract.txt` and
 installed only by the extract workflow. When it is absent the structural check
 reports SKIP and names itself; `--require-schema` makes that a failure.
 
-Stage 1 is currently `model-only`: shards and index files, no view pages.
-`--mode full` would add per-view geometry and is refused rather than silently
-producing a model-only extract labelled otherwise.
+`--mode model-only` reads the shards and index files and no view pages.
+`--mode full` additionally fetches the pages whose *arrangement* carries
+meaning and stores their geometry as nodes and edges.
+
+Not every view earns a page request. `GEOMETRY_VIEW_TYPES` in
+`bianlib/source.py` lists the four types that do. A Total view earns it because
+its containment is the value chain — view 54486 holds 341 service-domain boxes
+inside 51 nested groupings. A Capability map view does not: 12 nodes, no edges,
+every member already kept, so the page adds a layout nobody will render. Class
+and sequence diagrams are excluded because the existing harvest already
+converts them.
+
+Two things about geometry are easy to get wrong. **The SVG concept is a shape,
+not a type** — 339 service domains on view 54486 are drawn as
+`StrategyCapability`, so the type comes from the model through the node's
+`object`. And **ArchiMate nodes carry no `<rect>`**; they are rounded-rectangle
+path outlines, so `bianlib/geometry.py` walks the path command list and falls
+back to `<rect>` only where there is one.
 
 ## The scheduled week
 
