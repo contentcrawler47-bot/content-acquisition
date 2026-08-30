@@ -46,7 +46,10 @@ class Source(BianSource):
     # read — that was the original bug, and it was silent.
     expected_service_domains = 367
     min_service_domains = 340
-    # After allowlist filtering, roughly 11,300 of 128,270 objects remain.
+    # After allowlist filtering, roughly 11,700 of 128,270 objects remain
+    # (11,340 before `Work package` was added, measured against the extract of
+    # 30 August 2026). This is a FLOOR, deliberately far below the measured
+    # value: it catches a filter that has broken, not one that has drifted.
     min_objects = 8000
     # 429 sequence and 802 class diagrams exist at v14.0. The minimums allow
     # for a handful of pages legitimately failing to convert.

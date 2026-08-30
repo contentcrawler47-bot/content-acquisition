@@ -1,0 +1,121 @@
+name: Render — BIAN v14 (stage 2)
+
+# STAGE 2: read a stored extract, apply the allowlist, report what would be
+# published. Makes NO network requests at all — not to bian.org, not to Drive.
+#
+# References no Google Drive secrets and fetches no source, so a red run here
+# is a SELECTION or CODE problem and nothing else. That separation is the same
+# one the Extract and Validate workflows keep, and it is what makes a failure
+# locatable without reading the log.
+#
+# WHAT THIS IS FOR
+#   Changing what gets published used to mean another pass over someone else's
+#   web server. Against a stored extract it is a re-render: run this with
+#   --add-category or --drop-category and read the numbers. That is the whole
+#   payoff of splitting extraction from rendering.
+#
+#   An experimental run is announced before and after its own numbers and can
+#   never publish — this workflow writes no bundle and syncs nothing.
+#
+# WHAT IT DOES NOT DO YET
+#   Selection only. Grouping, link resolution and diagram rendering are not
+#   built. This workflow exists from the first changeset of stage 2 rather
+#   than the last, because a capability with no workflow behind it has not
+#   been shipped — that mistake was made once here already.
+#
+# INPUT: stage 1's artifact. There is deliberately no fallback to fetching.
+# A reuse run that quietly re-fetched would produce a correct-looking result
+# by a route nobody asked for, and the log would be the only evidence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: >-
+          Run id of an "Extract — BIAN v14 (stage 1)" run to take the extract
+          from. Leave blank to extract fresh (makes requests to bian.org).
+        required: false
+      mode:
+        description: Extract scope, used only when extracting fresh
+        type: choice
+        options:
+          - model-only
+          - full
+        default: model-only
+      add_category:
+        description: "EXPERIMENT: also keep this category (reports only)"
+        required: false
+      drop_category:
+        description: "EXPERIMENT: do not keep this category (reports only)"
+        required: false
+
+permissions:
+  contents: read
+  # Only to download a prior run's extract artifact. Nothing here writes.
+  actions: read
+
+concurrency:
+  group: render-bian-v14
+  cancel-in-progress: true
+
+env:
+  SOURCE_ID: bian-v14
+
+jobs:
+  render:
+    name: What would we publish from the stored model?
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Pinned for the same reason as the Extract workflow:
+      # requirements-extract.txt hashes a wheel built per interpreter version.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned validation dependencies
+        run: |
+          python3 -m pip install --require-hashes -r requirements.txt
+          python3 -m pip install --require-hashes -r requirements-extract.txt
+
+      - name: Take the extract from a previous run
+        if: inputs.run_id != ''
+        uses: actions/download-artifact@v6
+        with:
+          name: extract-bian-v14
+          path: out/_extract/bian-v14
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      # Only when no run id was given. Named separately from the step above so
+      # the log says plainly which of the two happened: a stored extract and a
+      # freshly fetched one must never be indistinguishable after the fact.
+      - name: Or extract fresh (makes requests to bian.org)
+        if: inputs.run_id == ''
+        run: python3 run.py extract "$SOURCE_ID" --mode "${{ inputs.mode }}"
+
+      - name: Confirm the extract is intact before reading it
+        run: |
+          cd "out/_extract/$SOURCE_ID"
+          sha256sum -c EXTRACT.sha256 --quiet
+          echo "  extract verified: $(wc -l < EXTRACT.sha256) files"
+
+      - name: Select
+        run: |
+          python3 run.py render "$SOURCE_ID" \
+            ${{ inputs.add_category && format('--add-category ''{0}''', inputs.add_category) || '' }} \
+            ${{ inputs.drop_category && format('--drop-category ''{0}''', inputs.drop_category) || '' }}
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "::error title=Render failed::This is a SELECTION or CODE problem."
+          echo "  No Drive credentials are used here and no source is fetched"
+          echo "  unless run_id was left blank."
+          echo "  Canary missing    -> the allowlist no longer keeps a known object."
+          echo "  Below the floor   -> selection kept fewer objects than min_objects."
+          echo "  No extract found  -> give a run_id, or leave it blank to extract fresh."

@@ -132,6 +132,68 @@ def cmd_extract(sources, args) -> int:
     return 0
 
 
+def cmd_render(sources, args) -> int:
+    """Stage 2. Select from a stored extract and report what would publish.
+
+    Makes NO network requests: its input is an extract on disk. That is the
+    property the two-stage split exists to protect, so there is deliberately
+    no fallback to fetching — a missing extract fails and says how to make
+    one, rather than quietly producing a correct-looking result by a route
+    nobody asked for.
+
+    Selection only, today. Grouping, link resolution and diagram rendering
+    are not built; this command does not write a bundle and does not publish.
+    """
+    from bianlib import extract as extract_mod
+    from bianlib.select import allowlist_delta, report, select
+
+    s = sources[args.source]
+    outdir = EXTRACT_OUT / s.id
+    if not (outdir / extract_mod.INDEX_FILE).is_file():
+        print(f"No extract at {outdir}.", file=sys.stderr)
+        print(f"  Run: python3 run.py extract {s.id} --mode model-only",
+              file=sys.stderr)
+        print("  Stage 2 reads stored data and never fetches; this is not a "
+              "condition it can recover from.", file=sys.stderr)
+        return 2
+
+    print(f"Rendering {s} from {outdir}", flush=True)
+    doc = extract_mod.read(outdir)
+
+    keep, notes = None, []
+    if args.add_category or args.drop_category:
+        keep, notes = allowlist_delta(add=args.add_category or (),
+                                      drop=args.drop_category or ())
+
+    sel = select(doc.get("objects", []), keep=keep)
+
+    if notes:
+        # An experimental selection must never be mistaken for the published
+        # one, so it is announced before the numbers it changes and again
+        # after them.
+        print("\n  *** EXPERIMENTAL SELECTION — NOT THE PUBLISHED SET ***")
+        for n in notes:
+            print(f"      {n}")
+    print()
+    print("\n".join(report(sel)))
+
+    if not sel.canary(s.canary_id, s.canary_name):
+        print(f"\n  FAIL: canary {s.canary_id} ({s.canary_name}) did not "
+              f"survive selection.", file=sys.stderr)
+        return 1
+    print(f"\n  canary {s.canary_id} ({s.canary_name}): kept")
+
+    if len(sel.kept) < s.min_objects:
+        print(f"\n  FAIL: {len(sel.kept)} objects selected, floor is "
+              f"{s.min_objects}.", file=sys.stderr)
+        return 1
+
+    if notes:
+        print("\n  *** the numbers above are EXPERIMENTAL and were NOT "
+              "produced by the published allowlist ***")
+    return 0
+
+
 def cmd_validate(sources, args) -> int:
     """Validate that content can be EXTRACTED from this source.
 
@@ -304,6 +366,14 @@ def main(argv=None) -> int:
     e.add_argument("--mode", choices=["model-only", "full"],
                    default="model-only",
                    help="model-only reads no view pages")
+    rn = with_source(sub.add_parser(
+        "render", help="STAGE 2: select from a stored extract (no network)"))
+    rn.add_argument("--add-category", action="append", metavar="CATEGORY",
+                    help="EXPERIMENT: also keep this category. Reports only; "
+                         "never publishes. Repeatable.")
+    rn.add_argument("--drop-category", action="append", metavar="CATEGORY",
+                    help="EXPERIMENT: do not keep this category. Reports "
+                         "only; never publishes. Repeatable.")
     v = with_source(sub.add_parser(
         "validate", help="check content can be EXTRACTED (no Drive)"))
     v.add_argument("--strict", action="store_true", help="warnings fail too")
@@ -325,7 +395,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     handler = {
         "list": cmd_list, "harvest": cmd_harvest, "validate": cmd_validate,
-        "extract": cmd_extract,
+        "extract": cmd_extract, "render": cmd_render,
         "publish": cmd_publish, "run": cmd_run, "reindex": cmd_reindex,
         "check-publish": cmd_check_publish,
     }[args.cmd]

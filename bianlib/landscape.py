@@ -45,6 +45,27 @@ SKIP_RELATION_VERBS = {"", "<unknown role>"}
 # An allowlist is the only maintainable approach at that scale — a new junk
 # category upstream is then ignored by default rather than silently bloating
 # the output.
+#
+# MEASURED, not argued. Membership is decided against a stored extract, which
+# is what the two-stage split bought: `run.py render --add-category X` reports
+# what X would add without a single request to bian.org. Two results are
+# recorded here because a later reader will otherwise re-open them.
+#
+#   `Work package` (added)     355 objects, +3.1% on the bundle. 59.4% carry
+#                              real documentation at a median of 500 chars —
+#                              denser prose than every other kept category
+#                              except ServiceDomain.
+#   `Business function` (out)  328 objects, +2.9%, but only 27.1% carry text
+#                              at a median of 70 chars. Rejected on density,
+#                              not on size. Re-measurable if that changes.
+#
+# Five kept categories carry NO documentation key at all — ServiceGroup
+# (1,485), AnalyticsObject (339), SDServiceGroup (325), Service Domain (2),
+# Business Scenario (1): 2,152 objects, 19% of the bundle, name and category
+# only. Deliberately KEPT. They are real BIAN structure, and an object with a
+# name and a place in the model is still worth publishing; the alternative was
+# a bundle that silently omits a fifth of the service model. Do not remove
+# them on the grounds that they look empty — that question has been asked.
 INCLUDE_CATEGORIES = {
     # Core service model
     "ServiceDomain", "Service Domain", "ServiceOperation", "ServiceOperationType",
@@ -56,7 +77,7 @@ INCLUDE_CATEGORIES = {
     # Structure and classification
     "BusinessArea", "BusinessDomain", "BusinessConcept", "FunctionalPattern",
     "Capability", "Grouping", "GenericArtifact", "ActionTerm",
-    "Business Scenario",
+    "Business Scenario", "Work package",
 }
 
 # ArchiMate models relationships as first-class objects. They carry no

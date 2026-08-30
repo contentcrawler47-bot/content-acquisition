@@ -21,6 +21,9 @@ sources/
 bianlib/                   BIAN extraction, shared across landscape versions
   fetch.py                 paced, backing-off, cache-aware HTTP
   landscape.py             the data model: shards, relations, views
+  extract.py               STAGE 1: the model as partitioned JSON-LD
+  geometry.py              view geometry as nodes and edges
+  select.py                STAGE 2: the allowlist, applied to an extract
   views.py                 view-page SVG geometry -> PlantUML
   plan.py                  view classification, chunking, verification
   pipeline.py              plan -> chunk -> assemble
@@ -37,7 +40,7 @@ tools/
   probe_*.py               one-off investigations, kept as evidence
 docs/ADDING_A_SOURCE.md
 changesets/                upload target for revision zips
-.github/workflows/         seventeen; six scheduled — see The scheduled week
+.github/workflows/         eighteen; six scheduled — see The scheduled week
 ```
 
 ## Sources
