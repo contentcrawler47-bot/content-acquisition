@@ -45,7 +45,7 @@ from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
 #: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
@@ -147,7 +147,8 @@ def _first_entry(obj) -> dict:
 
 
 def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
-          insite_models: dict | None = None) -> dict:
+          insite_models=None, models_url: str = "",
+          models_tried: list | None = None) -> dict:
     """The extract document for a loaded landscape.
 
     Pure: takes a materialised model and returns a dict. No network, no disk,
@@ -282,7 +283,10 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
         },
         "status": {
             # Named states, so "absent" and "not asked for" never look alike.
-            "models": "present" if insite_models else "not-fetched",
+            "models": "present" if models_by_view else "not-fetched",
+            "models_url": models_url,
+            "models_tried": list(models_tried or []),
+            "views_with_model": sum(1 for v in views if v["model"]),
             "geometry": "not-fetched",
             "notation_unresolved": notation_missing,
             "malformed_objects": len(malformed),
@@ -304,34 +308,36 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
     return doc
 
 
-def _models_index(insite_models) -> dict:
-    """{viewId: modelName} from models_data.js, when it has been fetched.
+def _models_index(entries) -> dict:
+    """{viewId: modelName} from the insite_models entries.
 
-    Not wired into the fetch path yet. The probe located this file by trying
-    several candidate paths, and no run recorded here has exercised the one
-    that answered, so hardcoding a URL would be quoting a path as known
-    without the run that proves it. build() accepts the parsed structure so
-    that wiring it later is one call, not a change to this module.
+    The shape is a LIST of model entries, each carrying `name` and a `views`
+    list of objects with an `id` — not a mapping of name to view ids. An
+    earlier version of this module assumed the latter and was never exercised,
+    because models were not fetched until changeset 033. Read from the probe
+    run that actually parsed the file.
     """
-    if not isinstance(insite_models, dict):
-        return {}
     out = {}
-    for name, entry in insite_models.items():
-        if not isinstance(entry, dict):
-            continue
-        for vid in entry.get("views") or []:
-            out[str(vid)] = name
+    for entry in L._l(entries):
+        name = L._d(entry).get("name") or "(unnamed model)"
+        for view in L._l(L._d(entry).get("views")):
+            vid = L._d(view).get("id")
+            if vid is not None:
+                out[str(vid)] = name
     return out
 
 
-def _models_list(insite_models) -> list:
-    if not isinstance(insite_models, dict):
-        return []
+def _models_list(entries) -> list:
+    """One record per named model, with the number of views it groups."""
     out = []
-    for name, entry in sorted(insite_models.items()):
-        views = entry.get("views") or [] if isinstance(entry, dict) else []
-        out.append({"type": "Model", "name": name, "view_count": len(views)})
-    return out
+    for entry in L._l(entries):
+        name = L._d(entry).get("name") or "(unnamed model)"
+        out.append({
+            "type": "Model",
+            "name": name,
+            "view_count": len(L._l(L._d(entry).get("views"))),
+        })
+    return sorted(out, key=lambda m: m["name"])
 
 
 # --- partitioning and serialising ------------------------------------------

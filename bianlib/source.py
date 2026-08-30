@@ -128,9 +128,16 @@ class BianSource(BaseSource):
 
         fetcher = Fetcher(self.base)
         model = L.Landscape(self.base, object_view=self.object_view).load(fetcher)
+
+        # The model index. Its location is discovered rather than asserted --
+        # see MODELS_CANDIDATES. Fetched after the model so a failure here
+        # cannot be confused with a failure to load the landscape.
+        print(f"  looking for insite_models under {self.base}", flush=True)
+        entries, models_url, tried = L.fetch_models(fetcher)
         fetcher.close()
 
-        doc = E.build(model, self.id, mode=mode)
+        doc = E.build(model, self.id, mode=mode, insite_models=entries,
+                      models_url=models_url, models_tried=tried)
         summary = E.write(doc, outdir)
 
         status = doc["status"]
@@ -150,8 +157,15 @@ class BianSource(BaseSource):
         print(f"  memberships resolving to nothing: "
               f"{status['unresolved_members']} of "
               f"{counts['view_members']}", flush=True)
-        print(f"  models : {status['models']}   "
-              f"geometry: {status['geometry']}", flush=True)
+        if status["models"] == "present":
+            print(f"  models : {len(doc['models'])} named, "
+                  f"{status['views_with_model']} of {counts['views']} views "
+                  f"carry one   (from {status['models_url']})", flush=True)
+        else:
+            print(f"  models : NOT FETCHED after trying "
+                  f"{', '.join(status['models_tried']) or 'nothing'}",
+                  flush=True)
+        print(f"  geometry: {status['geometry']}", flush=True)
         if status["malformed_objects"]:
             print(f"  malformed objects skipped: "
                   f"{status['malformed_objects']}", flush=True)

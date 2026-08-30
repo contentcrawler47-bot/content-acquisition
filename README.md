@@ -133,6 +133,14 @@ declaring a number twice is only useful if something checks it. Byte digests
 live in `EXTRACT.sha256` beside the files, because "did the file change" and
 "did the content change" are different questions.
 
+The extract also carries the **model index**: `insite_models` groups views into
+named models, and is the only published statement of a view's *purpose* —
+`insiteViews` gives only a name, and no ArchiMate viewpoints are declared
+anywhere. Its location is not in the documented layout, so `fetch_models()`
+tries candidates in order and records which one answered in the extract's
+`status`. A run that cannot find it **fails**, naming every path it tried;
+`--allow-missing-models` downgrades that to a warning.
+
 Schema validation needs `jsonschema`, pinned in `requirements-extract.txt` and
 installed only by the extract workflow. When it is absent the structural check
 reports SKIP and names itself; `--require-schema` makes that a failure.

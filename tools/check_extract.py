@@ -352,17 +352,41 @@ def check_integrity(doc: dict, result: Result, args) -> None:
                    f"{len(with_notation)} of {len(objects)} ({share:.1f}%), "
                    f"floor {args.min_notation_share:.0f}%")
 
-    # Models, when they were fetched at all.
-    status_models = doc.get("status", {}).get("models")
-    if status_models == "not-fetched":
-        result.add(WARN, "views carry a model",
-                   f"0 of {len(views)} — models not fetched in this run")
+    # Models. The index is the only published statement of a view's purpose,
+    # so its absence is a failure rather than a footnote: a run that silently
+    # stopped fetching it would still look green everywhere else.
+    status = doc.get("status", {})
+    tried = ", ".join(status.get("models_tried") or []) or "nothing"
+    if status.get("models") != "present":
+        result.add(WARN if args.allow_missing_models else FAIL,
+                   "the model index was fetched",
+                   f"not fetched after trying {tried}")
     else:
+        result.add(PASS, "the model index was fetched",
+                   f"{len(doc.get('models', []))} models from "
+                   f"{status.get('models_url')}")
+
         with_model = [v for v in views if v.get("model")]
         bad = [v for v in with_model if v["model"] not in model_names]
         result.count(len(with_model) - len(bad), len(with_model),
-                     "every view model is declared",
-                     expected=len(with_model))
+                     "every view model is declared", expected=len(with_model))
+
+        # Views carrying a model, against every view. The number that cannot
+        # is known and is the same 385 that are not objects in the model, so
+        # this is an equality rather than a floor.
+        unnamed = sum(1 for v in views if not v.get("diagram_object"))
+        result.count(len(with_model), len(views), "views carry a model",
+                     expected=len(views) - unnamed)
+
+        # A model's declared view_count must match the views pointing at it.
+        counted = {}
+        for v in with_model:
+            counted[v["model"]] = counted.get(v["model"], 0) + 1
+        agree = sum(1 for m in doc.get("models", [])
+                    if counted.get(m["name"], 0) == m["view_count"])
+        result.count(agree, len(doc.get("models", [])),
+                     "model view counts agree",
+                     expected=len(doc.get("models", [])))
 
     # The allowlist is imported, never restated. This reports what stage 2
     # would select from this extract without running stage 2.
@@ -482,6 +506,8 @@ def main(argv=None) -> int:
                     help="percent of objects that must resolve a notation")
     ap.add_argument("--allow-unresolved-relations", type=int, default=5,
                     help="known-unresolvable relation targets")
+    ap.add_argument("--allow-missing-models", action="store_true",
+                    help="downgrade a missing model index to a warning")
     ap.add_argument("--allow-unresolved-members", type=int, default=25,
                     help="memberships naming neither an object nor a view "
                          "(measured 15 of 127,588 on 29 August 2026)")

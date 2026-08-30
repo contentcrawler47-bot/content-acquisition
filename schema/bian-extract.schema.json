@@ -110,8 +110,11 @@
               "geometry",
               "malformed_objects",
               "models",
+              "models_tried",
+              "models_url",
               "notation_unresolved",
-              "unresolved_members"
+              "unresolved_members",
+              "views_with_model"
             ],
             "additionalProperties": true,
             "properties": {
@@ -142,6 +145,21 @@
                 }
               },
               "unresolved_members": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "models_url": {
+                "type": "string",
+                "description": "The candidate path that answered, or empty when none did."
+              },
+              "models_tried": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Every candidate attempted, in order, so a failure names what was tried."
+              },
+              "views_with_model": {
                 "type": "integer",
                 "minimum": 0
               }

@@ -135,6 +135,56 @@ def parse_js_assignment(text: str):
     return next(iter(parse_js_assignments(text).values()))
 
 
+#: `data/models_data.js` defines `insite_models`, the only published statement
+#: of a view's PURPOSE. `insiteViews` gives a view a name; nothing else says
+#: what it is for, and zero ArchiMate viewpoints are declared anywhere in the
+#: landscape.
+#:
+#: The file is not in the documented layout, so the location is discovered by
+#: trying candidates rather than asserted. That is deliberate: the probe found
+#: it this way, and no run had recorded which candidate answered, so hardcoding
+#: one would be quoting a path as known without the run that proves it. The
+#: order is most-likely first; the one that answers is recorded in the extract.
+MODELS_CANDIDATES = ("data/models_data.js", "models_data.js",
+                     "data/all_models_data.js")
+
+
+def fetch_models(fetcher) -> tuple[list, str, list[str]]:
+    """The `insite_models` entries, the URL that answered, and what was tried.
+
+    Returns ([], "", tried) when none answered, so a caller can carry on and
+    report the absence rather than losing the run to one missing file. Each
+    candidate's outcome is printed, so a failure names which paths were tried
+    and how each one failed — an empty result and a wrong URL must not look
+    alike.
+
+    Promoted from tools/probe_archimate.py, which is where this file was found.
+    """
+    tried = []
+    for candidate in MODELS_CANDIDATES:
+        url = f"{fetcher.base}/{candidate}"
+        tried.append(candidate)
+        try:
+            resp = fetcher.get(url, conditional=False)
+        except Exception as e:                              # noqa: BLE001
+            print(f"    {candidate:<28} {type(e).__name__}", flush=True)
+            continue
+        if resp.status != 200 or not resp.text.strip():
+            print(f"    {candidate:<28} HTTP {resp.status}", flush=True)
+            continue
+        try:
+            entries = _l(next(iter(parse_js_assignments(resp.text).values())))
+        except Exception as e:                              # noqa: BLE001
+            print(f"    {candidate:<28} unparseable ({type(e).__name__})",
+                  flush=True)
+            continue
+        views = sum(len(_l(_d(e).get("views"))) for e in entries)
+        print(f"    {candidate:<28} {len(entries)} models, {views} views",
+              flush=True)
+        return entries, candidate, tried
+    return [], "", tried
+
+
 def shard_numbers(mapping: dict) -> list[int]:
     """Shard indices to fetch, taken from the mapping's values.
 
