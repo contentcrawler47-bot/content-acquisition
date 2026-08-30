@@ -119,7 +119,8 @@ class Source:
         """
         return []
 
-    def build_extract(self, outdir: Path, mode: str = "model-only") -> dict:
+    def build_extract(self, outdir: Path, mode: str = "model-only",
+                      run: dict | None = None) -> dict:
         """Optional. Write this source's data as a structured extract.
 
         Stage 1 of the two-stage design: acquire and store the model, without
@@ -127,6 +128,9 @@ class Source:
         not adopted it keep working exactly as before — this is an optional
         capability rather than a change to the harvest contract, so adding it
         cannot affect a source that does not implement it.
+
+        `run` is CI provenance recorded into the extract, supplied by the
+        caller so that nothing below this line reads the environment.
 
         Returns a summary dict of counts and digests. Never returns content.
         """

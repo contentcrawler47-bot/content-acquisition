@@ -45,7 +45,7 @@ from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
 #: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.4.1"
+SCHEMA_VERSION = "1.5.0"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
@@ -148,12 +148,19 @@ def _first_entry(obj) -> dict:
 
 def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
           insite_models=None, models_url: str = "",
-          models_tried: list | None = None, geometry: dict | None = None) -> dict:
+          models_tried: list | None = None, geometry: dict | None = None,
+          run: dict | None = None) -> dict:
     """The extract document for a loaded landscape.
 
     Pure: takes a materialised model and returns a dict. No network, no disk,
     no environment. That is what makes it testable without reaching bian.org,
     and it is why loading stays in Landscape.load where it already was.
+
+    `run` is provenance about the CI run that produced this extract, passed in
+    rather than read from the environment — reading it here would make this
+    function environment-dependent and untestable, which is the property the
+    paragraph above exists to protect. It is excluded from `content_digest` by
+    construction, so two runs over identical content still agree.
     """
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {MODES}")
@@ -285,6 +292,12 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
             "parser_version": PARSER_VERSION,
             "mode": mode,
             "shards": list(landscape.shards),
+            # Which CI run produced this. Without it there is no way back from
+            # a downloaded artifact to the run that made it, and stage 2's
+            # reuse is keyed on exactly that. "local" when built outside CI,
+            # so a sandbox replay can never be mistaken for a run — a
+            # rehearsal has been recorded as a result here once already.
+            "run": dict(run) if run else {"where": "local"},
         },
         "status": {
             # Named states, so "absent" and "not asked for" never look alike.

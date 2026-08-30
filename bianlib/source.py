@@ -170,16 +170,17 @@ class BianSource(BaseSource):
               f"{failed} failed", flush=True)
         return out
 
-    def build_extract(self, outdir: Path, mode: str = "model-only") -> dict:
+    def build_extract(self, outdir: Path, mode: str = "model-only",
+                      run: dict | None = None) -> dict:
         """Load the landscape and write it as a JSON-LD extract.
 
         Loads exactly what `harvest()` loads, and then stores it rather than
         rendering it. Nothing is filtered: the allowlist is applied by stage 2,
         so a change to it costs a re-render and no requests at all.
 
-        `model-only` reads the shards and index files. `full` would add
-        per-view geometry and is refused here rather than silently producing a
-        model-only extract labelled `full`.
+        `model-only` reads the shards and index files. `full` additionally
+        fetches every view page and stores its geometry as nodes and edges,
+        which is several hundred requests against someone else's web server.
         """
         from bianlib import extract as E
 
@@ -199,7 +200,7 @@ class BianSource(BaseSource):
 
         doc = E.build(model, self.id, mode=mode, insite_models=entries,
                       models_url=models_url, models_tried=tried,
-                      geometry=geometry)
+                      geometry=geometry, run=run)
         summary = E.write(doc, outdir)
 
         status = doc["status"]

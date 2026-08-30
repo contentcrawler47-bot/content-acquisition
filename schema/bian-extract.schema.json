@@ -1,757 +1,791 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/contentcrawler47-bot/content-acquisition/schema/bian-extract.schema.json",
-  "title": "BIAN landscape extract (stage 1)",
-  "description": "The contract between stage 1 (extract) and stage 2 (render). The extract is several files: an index whose type is Extract, and one part file per bulk collection whose type is ExtractPart. Both are validated by this schema, which branches on that type. Structural only: referential integrity across the graph is checked by tools/check_extract.py, which reports counts against denominators rather than a conformance boolean. Note $id here is JSON Schema's identifier and is unrelated to JSON-LD's @id, which appears in the instance as the term 'id'.",
-  "type": "object",
-  "required": [
-    "@context",
-    "id",
-    "type"
-  ],
-  "properties": {
-    "type": {
-      "enum": [
-        "Extract",
-        "ExtractPart"
-      ]
-    }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "Extract"
-          }
-        },
-        "required": [
-          "type"
-        ]
-      },
-      "then": {
-        "required": [
-          "@context",
-          "id",
-          "type",
-          "extract",
-          "status",
-          "notations",
-          "categories",
-          "models",
-          "parts",
-          "content_digest"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "@context": {
-            "$ref": "#/$defs/context"
-          },
-          "id": {
-            "type": "string",
-            "pattern": "^urn:bian:"
-          },
-          "type": {
-            "const": "Extract"
-          },
-          "content_digest": {
-            "$ref": "#/$defs/sha256"
-          },
-          "extract": {
-            "type": "object",
-            "required": [
-              "source_id",
-              "base_url",
-              "fetched_at",
-              "schema_version",
-              "parser_version",
-              "mode",
-              "shards"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "source_id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "base_url": {
-                "type": "string",
-                "minLength": 1
-              },
-              "fetched_at": {
-                "type": "string",
-                "minLength": 10
-              },
-              "schema_version": {
-                "type": "string",
-                "minLength": 1
-              },
-              "parser_version": {
-                "type": "string",
-                "minLength": 1
-              },
-              "mode": {
-                "enum": [
-                  "model-only",
-                  "full"
-                ]
-              },
-              "shards": {
-                "type": "array",
-                "items": {
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "status": {
-            "type": "object",
-            "required": [
-              "geometry",
-              "geometry_unboxed",
-              "malformed_objects",
-              "models",
-              "models_tried",
-              "models_url",
-              "notation_unresolved",
-              "unresolved_members",
-              "views_with_geometry",
-              "views_with_model"
-            ],
-            "additionalProperties": true,
-            "properties": {
-              "models": {
-                "enum": [
-                  "present",
-                  "not-fetched"
-                ]
-              },
-              "geometry": {
-                "enum": [
-                  "present",
-                  "not-fetched"
-                ]
-              },
-              "notation_unresolved": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "malformed_objects": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "malformed_object_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "unresolved_members": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "models_url": {
-                "type": "string",
-                "description": "The candidate path that answered, or empty when none did."
-              },
-              "models_tried": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Every candidate attempted, in order, so a failure names what was tried."
-              },
-              "views_with_model": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "views_with_geometry": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "geometry_unboxed": {
-                "type": "integer",
-                "minimum": 0
-              }
-            }
-          },
-          "notations": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/notation"
-            }
-          },
-          "categories": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/category"
-            }
-          },
-          "models": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/model"
-            }
-          },
-          "parts": {
-            "type": "array",
-            "minItems": 6,
-            "description": "One entry per collection, each listing its range partitions with the boundaries that define the partition function. Boundaries are cut at equal rank and published here, so placement is a lookup against this document rather than a computation a reader must reimplement.",
-            "items": {
-              "type": "object",
-              "required": [
-                "part",
-                "count",
-                "content_digest",
-                "partitions"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "part": {
-                  "enum": [
-                    "objects",
-                    "relations",
-                    "views",
-                    "view_members",
-                    "geometry_nodes",
-                    "geometry_edges"
-                  ]
-                },
-                "count": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "content_digest": {
-                  "$ref": "#/$defs/sha256"
-                },
-                "partitions": {
-                  "type": "array",
-                  "minItems": 1,
-                  "items": {
-                    "$ref": "#/$defs/partition"
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://github.com/contentcrawler47-bot/content-acquisition/schema/bian-extract.schema.json",
+ "title": "BIAN landscape extract (stage 1)",
+ "description": "The contract between stage 1 (extract) and stage 2 (render). The extract is several files: an index whose type is Extract, and one part file per bulk collection whose type is ExtractPart. Both are validated by this schema, which branches on that type. Structural only: referential integrity across the graph is checked by tools/check_extract.py, which reports counts against denominators rather than a conformance boolean. Note $id here is JSON Schema's identifier and is unrelated to JSON-LD's @id, which appears in the instance as the term 'id'.",
+ "type": "object",
+ "required": [
+  "@context",
+  "id",
+  "type"
+ ],
+ "properties": {
+  "type": {
+   "enum": [
+    "Extract",
+    "ExtractPart"
+   ]
+  }
+ },
+ "allOf": [
+  {
+   "if": {
+    "properties": {
+     "type": {
+      "const": "Extract"
+     }
     },
-    {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "ExtractPart"
-          }
-        },
-        "required": [
-          "type"
-        ]
-      },
-      "then": {
-        "required": [
-          "@context",
-          "content_digest",
-          "count",
-          "extract",
-          "id",
-          "max_key",
-          "min_key",
-          "part",
-          "partition",
-          "type"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "@context": {
-            "$ref": "#/$defs/context"
-          },
-          "id": {
-            "type": "string",
-            "pattern": "^urn:bian:"
-          },
-          "type": {
-            "const": "ExtractPart"
-          },
-          "part": {
-            "enum": [
-              "objects",
-              "relations",
-              "views",
-              "view_members",
-              "geometry_nodes",
-              "geometry_edges"
-            ]
-          },
-          "extract": {
-            "type": "string",
-            "pattern": "^urn:bian:"
-          },
-          "count": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "content_digest": {
-            "$ref": "#/$defs/sha256"
-          },
-          "objects": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/object"
-            }
-          },
-          "relations": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/relation"
-            }
-          },
-          "views": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/view"
-            }
-          },
-          "view_members": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/viewMember"
-            }
-          },
-          "partition": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "min_key": {
-            "type": "integer"
-          },
-          "max_key": {
-            "type": "integer"
-          },
-          "geometry_nodes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/geometryNode"
-            }
-          },
-          "geometry_edges": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/geometryEdge"
-            }
-          }
-        }
-      }
-    }
-  ],
-  "$defs": {
-    "object": {
-      "type": "object",
-      "required": [
-        "id",
-        "type",
-        "object_id",
-        "name",
-        "category",
-        "notation"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:object:"
-        },
-        "type": {
-          "const": "Object"
-        },
-        "object_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "name": {
-          "type": "string"
-        },
-        "category": {
-          "type": "string",
-          "minLength": 1
-        },
-        "notation": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "type_icon_path": {
-          "type": "string"
-        },
-        "documentation": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        }
-      }
-    },
-    "relation": {
-      "type": "object",
-      "required": [
-        "id",
-        "type",
-        "source",
-        "target",
-        "verb"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:relation:"
-        },
-        "type": {
-          "const": "Relation"
-        },
-        "source": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:object:"
-        },
-        "target": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:object:"
-        },
-        "verb": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
-    },
-    "view": {
-      "type": "object",
-      "required": [
-        "id",
-        "type",
-        "view_id",
-        "title",
-        "diagram_object",
-        "kind",
-        "model",
-        "member_count",
-        "has_geometry"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:view:"
-        },
-        "type": {
-          "const": "View"
-        },
-        "view_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "title": {
-          "type": "string"
-        },
-        "diagram_object": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "pattern": "^urn:bian:[^:]+:object:"
-        },
-        "diagram_category": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "kind": {
-          "enum": [
-            "sequence",
-            "class",
-            "other",
-            "unnamed"
-          ]
-        },
-        "model": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "member_count": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "has_geometry": {
-          "type": "boolean"
-        }
-      }
-    },
-    "viewMember": {
-      "type": "object",
-      "required": [
-        "type",
-        "view",
-        "target",
-        "target_type"
-      ],
-      "additionalProperties": false,
-      "description": "A placement on a view. The target is usually an object, but objectsOnViews also carries diagram-to-diagram references, so target_type says which.",
-      "properties": {
-        "type": {
-          "const": "ViewMember"
-        },
-        "view": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:view:"
-        },
-        "target": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:(object|view):"
-        },
-        "target_type": {
-          "enum": [
-            "object",
-            "view",
-            "unresolved"
-          ]
-        }
-      }
-    },
-    "category": {
-      "type": "object",
-      "required": [
-        "type",
-        "name",
-        "object_count"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "type": {
-          "const": "Category"
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "object_count": {
-          "type": "integer",
-          "minimum": 0
-        }
-      }
-    },
-    "notation": {
-      "type": "object",
-      "required": [
-        "type",
-        "name",
-        "object_count"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "type": {
-          "const": "Notation"
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "object_count": {
-          "type": "integer",
-          "minimum": 0
-        }
-      }
-    },
-    "model": {
-      "type": "object",
-      "required": [
-        "type",
-        "name",
-        "view_count"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "type": {
-          "const": "Model"
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "view_count": {
-          "type": "integer",
-          "minimum": 0
-        }
-      }
-    },
-    "context": {
-      "type": "object",
-      "description": "Embedded JSON-LD context. Embedded rather than referenced by URL so every file is self-describing offline, and generated from one symbol so the copies cannot drift.",
-      "minProperties": 1
-    },
-    "sha256": {
+    "required": [
+     "type"
+    ]
+   },
+   "then": {
+    "required": [
+     "@context",
+     "id",
+     "type",
+     "extract",
+     "status",
+     "notations",
+     "categories",
+     "models",
+     "parts",
+     "content_digest"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "@context": {
+      "$ref": "#/$defs/context"
+     },
+     "id": {
       "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
-    "partition": {
+      "pattern": "^urn:bian:"
+     },
+     "type": {
+      "const": "Extract"
+     },
+     "content_digest": {
+      "$ref": "#/$defs/sha256"
+     },
+     "extract": {
       "type": "object",
       "required": [
-        "file",
-        "partition",
-        "min_key",
-        "max_key",
+       "source_id",
+       "base_url",
+       "fetched_at",
+       "schema_version",
+       "parser_version",
+       "mode",
+       "shards"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "source_id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "base_url": {
+        "type": "string",
+        "minLength": 1
+       },
+       "fetched_at": {
+        "type": "string",
+        "minLength": 10
+       },
+       "schema_version": {
+        "type": "string",
+        "minLength": 1
+       },
+       "parser_version": {
+        "type": "string",
+        "minLength": 1
+       },
+       "mode": {
+        "enum": [
+         "model-only",
+         "full"
+        ]
+       },
+       "shards": {
+        "type": "array",
+        "items": {
+         "type": "integer"
+        }
+       },
+       "run": {
+        "type": "object",
+        "description": "Which CI run produced this extract. Optional: extracts written before schema 1.5.0 carry no run block, and stage 2 must still read them. Excluded from content_digest by construction, so two runs over identical content agree.",
+        "required": [
+         "where"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "where": {
+          "enum": [
+           "github-actions",
+           "local"
+          ]
+         },
+         "run_id": {
+          "type": "string"
+         },
+         "run_attempt": {
+          "type": "string"
+         },
+         "run_number": {
+          "type": "string"
+         },
+         "workflow": {
+          "type": "string"
+         },
+         "repository": {
+          "type": "string"
+         },
+         "url": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     },
+     "status": {
+      "type": "object",
+      "required": [
+       "geometry",
+       "geometry_unboxed",
+       "malformed_objects",
+       "models",
+       "models_tried",
+       "models_url",
+       "notation_unresolved",
+       "unresolved_members",
+       "views_with_geometry",
+       "views_with_model"
+      ],
+      "additionalProperties": true,
+      "properties": {
+       "models": {
+        "enum": [
+         "present",
+         "not-fetched"
+        ]
+       },
+       "geometry": {
+        "enum": [
+         "present",
+         "not-fetched"
+        ]
+       },
+       "notation_unresolved": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "malformed_objects": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "malformed_object_ids": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "unresolved_members": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "models_url": {
+        "type": "string",
+        "description": "The candidate path that answered, or empty when none did."
+       },
+       "models_tried": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Every candidate attempted, in order, so a failure names what was tried."
+       },
+       "views_with_model": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "views_with_geometry": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "geometry_unboxed": {
+        "type": "integer",
+        "minimum": 0
+       }
+      }
+     },
+     "notations": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/notation"
+      }
+     },
+     "categories": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/category"
+      }
+     },
+     "models": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/model"
+      }
+     },
+     "parts": {
+      "type": "array",
+      "minItems": 6,
+      "description": "One entry per collection, each listing its range partitions with the boundaries that define the partition function. Boundaries are cut at equal rank and published here, so placement is a lookup against this document rather than a computation a reader must reimplement.",
+      "items": {
+       "type": "object",
+       "required": [
+        "part",
         "count",
         "content_digest",
-        "bytes"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "file": {
-          "type": "string",
-          "pattern": "-[0-9]{4}\\.jsonld$"
-        },
-        "partition": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "min_key": {
-          "type": "integer"
-        },
-        "max_key": {
-          "type": "integer"
+        "partitions"
+       ],
+       "additionalProperties": false,
+       "properties": {
+        "part": {
+         "enum": [
+          "objects",
+          "relations",
+          "views",
+          "view_members",
+          "geometry_nodes",
+          "geometry_edges"
+         ]
         },
         "count": {
-          "type": "integer",
-          "minimum": 0
+         "type": "integer",
+         "minimum": 0
         },
         "content_digest": {
-          "$ref": "#/$defs/sha256"
+         "$ref": "#/$defs/sha256"
         },
-        "bytes": {
-          "type": "integer",
-          "minimum": 0
+        "partitions": {
+         "type": "array",
+         "minItems": 1,
+         "items": {
+          "$ref": "#/$defs/partition"
+         }
         }
+       }
       }
-    },
-    "geometryNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "type",
-        "view",
-        "node_id",
-        "object",
-        "concept",
-        "label",
-        "x",
-        "y",
-        "w",
-        "h",
-        "parent_id"
-      ],
-      "description": "A drawn box. `concept` is the SHAPE the page used, not the type: 339 service domains on view 54486 are drawn as StrategyCapability. The type comes from the model, through `object`.",
-      "properties": {
-        "type": {
-          "const": "GeometryNode"
-        },
-        "view": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:view:"
-        },
-        "node_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "object": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "pattern": "^urn:bian:[^:]+:object:"
-        },
-        "concept": {
-          "type": "string",
-          "minLength": 1
-        },
-        "label": {
-          "type": "string"
-        },
-        "x": {
-          "type": "number"
-        },
-        "y": {
-          "type": "number"
-        },
-        "w": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "h": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "parent_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "geometryEdge": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "type",
-        "view",
-        "edge_id",
-        "object",
-        "concept",
-        "label",
-        "from_node",
-        "to_node"
-      ],
-      "properties": {
-        "type": {
-          "const": "GeometryEdge"
-        },
-        "view": {
-          "type": "string",
-          "pattern": "^urn:bian:[^:]+:view:"
-        },
-        "edge_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "object": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "pattern": "^urn:bian:[^:]+:object:"
-        },
-        "concept": {
-          "type": "string",
-          "minLength": 1
-        },
-        "label": {
-          "type": "string"
-        },
-        "from_node": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "to_node": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
+     }
     }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "type": {
+      "const": "ExtractPart"
+     }
+    },
+    "required": [
+     "type"
+    ]
+   },
+   "then": {
+    "required": [
+     "@context",
+     "content_digest",
+     "count",
+     "extract",
+     "id",
+     "max_key",
+     "min_key",
+     "part",
+     "partition",
+     "type"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "@context": {
+      "$ref": "#/$defs/context"
+     },
+     "id": {
+      "type": "string",
+      "pattern": "^urn:bian:"
+     },
+     "type": {
+      "const": "ExtractPart"
+     },
+     "part": {
+      "enum": [
+       "objects",
+       "relations",
+       "views",
+       "view_members",
+       "geometry_nodes",
+       "geometry_edges"
+      ]
+     },
+     "extract": {
+      "type": "string",
+      "pattern": "^urn:bian:"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "content_digest": {
+      "$ref": "#/$defs/sha256"
+     },
+     "objects": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/object"
+      }
+     },
+     "relations": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/relation"
+      }
+     },
+     "views": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/view"
+      }
+     },
+     "view_members": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/viewMember"
+      }
+     },
+     "partition": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "min_key": {
+      "type": "integer"
+     },
+     "max_key": {
+      "type": "integer"
+     },
+     "geometry_nodes": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/geometryNode"
+      }
+     },
+     "geometry_edges": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/geometryEdge"
+      }
+     }
+    }
+   }
   }
+ ],
+ "$defs": {
+  "object": {
+   "type": "object",
+   "required": [
+    "id",
+    "type",
+    "object_id",
+    "name",
+    "category",
+    "notation"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:object:"
+    },
+    "type": {
+     "const": "Object"
+    },
+    "object_id": {
+     "type": "string",
+     "minLength": 1
+    },
+    "name": {
+     "type": "string"
+    },
+    "category": {
+     "type": "string",
+     "minLength": 1
+    },
+    "notation": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "type_icon_path": {
+     "type": "string"
+    },
+    "documentation": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "relation": {
+   "type": "object",
+   "required": [
+    "id",
+    "type",
+    "source",
+    "target",
+    "verb"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:relation:"
+    },
+    "type": {
+     "const": "Relation"
+    },
+    "source": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:object:"
+    },
+    "target": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:object:"
+    },
+    "verb": {
+     "type": "string",
+     "minLength": 1
+    }
+   }
+  },
+  "view": {
+   "type": "object",
+   "required": [
+    "id",
+    "type",
+    "view_id",
+    "title",
+    "diagram_object",
+    "kind",
+    "model",
+    "member_count",
+    "has_geometry"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:view:"
+    },
+    "type": {
+     "const": "View"
+    },
+    "view_id": {
+     "type": "string",
+     "minLength": 1
+    },
+    "title": {
+     "type": "string"
+    },
+    "diagram_object": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "pattern": "^urn:bian:[^:]+:object:"
+    },
+    "diagram_category": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "kind": {
+     "enum": [
+      "sequence",
+      "class",
+      "other",
+      "unnamed"
+     ]
+    },
+    "model": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "member_count": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "has_geometry": {
+     "type": "boolean"
+    }
+   }
+  },
+  "viewMember": {
+   "type": "object",
+   "required": [
+    "type",
+    "view",
+    "target",
+    "target_type"
+   ],
+   "additionalProperties": false,
+   "description": "A placement on a view. The target is usually an object, but objectsOnViews also carries diagram-to-diagram references, so target_type says which.",
+   "properties": {
+    "type": {
+     "const": "ViewMember"
+    },
+    "view": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:view:"
+    },
+    "target": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:(object|view):"
+    },
+    "target_type": {
+     "enum": [
+      "object",
+      "view",
+      "unresolved"
+     ]
+    }
+   }
+  },
+  "category": {
+   "type": "object",
+   "required": [
+    "type",
+    "name",
+    "object_count"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "type": {
+     "const": "Category"
+    },
+    "name": {
+     "type": "string",
+     "minLength": 1
+    },
+    "object_count": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "notation": {
+   "type": "object",
+   "required": [
+    "type",
+    "name",
+    "object_count"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "type": {
+     "const": "Notation"
+    },
+    "name": {
+     "type": "string",
+     "minLength": 1
+    },
+    "object_count": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "model": {
+   "type": "object",
+   "required": [
+    "type",
+    "name",
+    "view_count"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "type": {
+     "const": "Model"
+    },
+    "name": {
+     "type": "string",
+     "minLength": 1
+    },
+    "view_count": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "context": {
+   "type": "object",
+   "description": "Embedded JSON-LD context. Embedded rather than referenced by URL so every file is self-describing offline, and generated from one symbol so the copies cannot drift.",
+   "minProperties": 1
+  },
+  "sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "partition": {
+   "type": "object",
+   "required": [
+    "file",
+    "partition",
+    "min_key",
+    "max_key",
+    "count",
+    "content_digest",
+    "bytes"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "file": {
+     "type": "string",
+     "pattern": "-[0-9]{4}\\.jsonld$"
+    },
+    "partition": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "min_key": {
+     "type": "integer"
+    },
+    "max_key": {
+     "type": "integer"
+    },
+    "count": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "content_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "bytes": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "geometryNode": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "type",
+    "view",
+    "node_id",
+    "object",
+    "concept",
+    "label",
+    "x",
+    "y",
+    "w",
+    "h",
+    "parent_id"
+   ],
+   "description": "A drawn box. `concept` is the SHAPE the page used, not the type: 339 service domains on view 54486 are drawn as StrategyCapability. The type comes from the model, through `object`.",
+   "properties": {
+    "type": {
+     "const": "GeometryNode"
+    },
+    "view": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:view:"
+    },
+    "node_id": {
+     "type": "string",
+     "minLength": 1
+    },
+    "object": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "pattern": "^urn:bian:[^:]+:object:"
+    },
+    "concept": {
+     "type": "string",
+     "minLength": 1
+    },
+    "label": {
+     "type": "string"
+    },
+    "x": {
+     "type": "number"
+    },
+    "y": {
+     "type": "number"
+    },
+    "w": {
+     "type": "number",
+     "exclusiveMinimum": 0
+    },
+    "h": {
+     "type": "number",
+     "exclusiveMinimum": 0
+    },
+    "parent_id": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   }
+  },
+  "geometryEdge": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "type",
+    "view",
+    "edge_id",
+    "object",
+    "concept",
+    "label",
+    "from_node",
+    "to_node"
+   ],
+   "properties": {
+    "type": {
+     "const": "GeometryEdge"
+    },
+    "view": {
+     "type": "string",
+     "pattern": "^urn:bian:[^:]+:view:"
+    },
+    "edge_id": {
+     "type": "string",
+     "minLength": 1
+    },
+    "object": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "pattern": "^urn:bian:[^:]+:object:"
+    },
+    "concept": {
+     "type": "string",
+     "minLength": 1
+    },
+    "label": {
+     "type": "string"
+    },
+    "from_node": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "to_node": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   }
+  }
+ }
 }

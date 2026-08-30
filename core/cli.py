@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -107,6 +108,34 @@ def cmd_harvest(sources, args) -> int:
     return 0
 
 
+def ci_run() -> dict:
+    """Provenance for the CI run, or a marker that there isn't one.
+
+    Read HERE and nowhere deeper. `bianlib.extract.build()` is documented as
+    depending on no environment, and that is what lets it be tested without
+    reaching bian.org — so the environment is read at the boundary and passed
+    down as data.
+
+    Outside CI this returns `{"where": "local"}` rather than an empty dict or
+    partly-filled fields. A sandbox replay must never be able to pass for a
+    run: recording a rehearsal as a result has already happened here once.
+    """
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if not run_id:
+        return {"where": "local"}
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    return {
+        "where": "github-actions",
+        "run_id": run_id,
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        "run_number": os.environ.get("GITHUB_RUN_NUMBER", ""),
+        "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+        "repository": repo,
+        "url": f"{server}/{repo}/actions/runs/{run_id}" if repo else "",
+    }
+
+
 def cmd_extract(sources, args) -> int:
     """Stage 1. Acquire the source's model and store it as structured data.
 
@@ -123,7 +152,7 @@ def cmd_extract(sources, args) -> int:
     outdir = reset_dir(EXTRACT_OUT / s.id)
     print(f"Extracting {s} -> {outdir}", flush=True)
     try:
-        s.build_extract(outdir, mode=args.mode)
+        s.build_extract(outdir, mode=args.mode, run=ci_run())
     except NotImplementedError as e:
         print(f"\n  {e}", file=sys.stderr)
         print("  Stage 1 is optional; this source has not adopted it.",
@@ -159,6 +188,28 @@ def cmd_render(sources, args) -> int:
 
     print(f"Rendering {s} from {outdir}", flush=True)
     doc = extract_mod.read(outdir)
+
+    # Say WHICH extract this is before saying anything about its contents. A
+    # stored extract and a freshly fetched one must never be indistinguishable
+    # after the fact, and an extract built outside CI must never pass for a run.
+    meta = doc.get("extract", {}) or {}
+    run_meta = meta.get("run") or {}
+    print(f"  extract   : fetched {meta.get('fetched_at', 'UNKNOWN')}"
+          f"  mode={meta.get('mode', 'UNKNOWN')}"
+          f"  parser={meta.get('parser_version', 'UNKNOWN')}")
+    where = run_meta.get("where")
+    if where == "github-actions":
+        print(f"  produced by: run {run_meta.get('run_id')} "
+              f"attempt {run_meta.get('run_attempt') or '?'} "
+              f"({run_meta.get('workflow') or 'unknown workflow'})")
+        if run_meta.get("url"):
+            print(f"               {run_meta['url']}")
+    elif where == "local":
+        print("  produced by: NOT A CI RUN — built locally")
+    else:
+        # Extracts written before changeset 039 carry no run block at all.
+        print("  produced by: UNRECORDED — this extract predates run "
+              "provenance, so it cannot be traced to a run")
 
     keep, notes = None, []
     if args.add_category or args.drop_category:
