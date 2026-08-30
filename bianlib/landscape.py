@@ -158,7 +158,10 @@ def fetch_models(fetcher) -> tuple[list, str, list[str]]:
     and how each one failed — an empty result and a wrong URL must not look
     alike.
 
-    Promoted from tools/probe_archimate.py, which is where this file was found.
+    Promoted from the ArchiMate probe, which is where this file was found and
+    which was deleted once it had been. Promoted rather than reimplemented: the
+    candidate list and the order it tries them in are what an actual run
+    exercised, and rewriting them would have reproduced the guess instead.
     """
     tried = []
     for candidate in MODELS_CANDIDATES:

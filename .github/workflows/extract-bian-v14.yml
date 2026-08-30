@@ -4,19 +4,25 @@ name: Extract — BIAN v14 (stage 1)
 # nothing, filters nothing, and publishes nothing.
 #
 # References NO Google Drive secrets, so a red run here is always a source or
-# code problem. The extract is uploaded as an artifact rather than synced to
-# Drive: how large it is, and therefore whether a Drive scope for it is
-# viable, is exactly what the first runs are meant to answer.
+# code problem. That separation is load-bearing for diagnosis and must survive:
+# if this workflow ever publishes, publishing belongs in its own job.
+#
+# The extract is uploaded as an artifact and deliberately NOT synced to Drive.
+# The first runs were meant to answer whether a Drive scope was viable; they
+# did, and the answer is that it is not needed. Storage was never the obstacle
+# — the extract is well under 1% of a free quota. Stage 2 reads an extract from
+# disk within the same run, so nothing reads a stored extract back, and a Drive
+# copy would be a sync path no run exercises.
 #
 # Nothing here applies the category allowlist. That is deliberate and is the
 # point of the split — selection belongs to stage 2, so changing
 # INCLUDE_CATEGORIES becomes a re-render against a stored extract rather than
 # 47 more shard requests against someone else's web server.
 #
-# Scope is model-only: the shards and index files, about a minute of fetching.
-# Per-view geometry needs a decision about the ArchiMate node and edge shape
-# that has not been taken, so `full` is refused rather than silently producing
-# a model-only extract labelled otherwise.
+# Two scopes. `model-only` takes the shards and index files, about a minute of
+# fetching. `full` additionally fetches every view page and stores its geometry
+# as nodes and edges — several hundred requests against someone else's web
+# server, which is why this workflow is dispatch-only and must stay so.
 #
 # Reports counts, sizes and digests only, never acquired text: Actions logs on
 # a public repo are world-readable.
@@ -98,11 +104,17 @@ jobs:
       # Kept whether or not the checks passed: a failed extract is the thing
       # you most want to look at, and re-running it costs another pass over
       # bian.org.
+      #
+      # 90 days, the maximum for a public repo. The window is NOT for CI reuse:
+      # nothing downloads this artifact from a later run, and no permission here
+      # would let it. It is for the investigation loop — download the artifact,
+      # unzip it in a sandbox and query the whole population — which has settled
+      # several questions that resisted reasoning about them.
       - name: Upload the extract
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: extract-${{ env.SOURCE_ID }}
           path: out/_extract/${{ env.SOURCE_ID }}/
-          retention-days: 30
+          retention-days: 90
           if-no-files-found: error

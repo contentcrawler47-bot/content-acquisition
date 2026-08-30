@@ -37,7 +37,7 @@ tools/
   probe_*.py               one-off investigations, kept as evidence
 docs/ADDING_A_SOURCE.md
 changesets/                upload target for revision zips
-.github/workflows/         sixteen; six scheduled — see The scheduled week
+.github/workflows/         seventeen; six scheduled — see The scheduled week
 ```
 
 ## Sources
