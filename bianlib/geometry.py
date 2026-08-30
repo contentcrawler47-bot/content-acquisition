@@ -44,6 +44,14 @@ EDGE_SUFFIXES = ("Triggering", "Association", "Flow", "Access", "Aggregation",
                  "Specialization", "Assignment", "Composition", "Junction",
                  "Influence", "Realization", "Serving")
 
+#: Junctions are connector NODES in ArchiMate, not relationships. The suffix
+#: test below catches `OrJunction` because it ends with `Junction`, which put
+#: 13 of them into the edge collection with no endpoints on the first full run
+#: -- invisible to a renderer drawing nodes and skipped by one drawing edges.
+#: Named explicitly rather than fixed by pattern, because the pattern is what
+#: got it wrong.
+JUNCTION_ELEMENTS = {"Junction", "OrJunction", "AndJunction"}
+
 #: UML edge concepts are named outright rather than by composition.
 UML_EDGE_CONCEPTS = {"UML_Association", "UML_Generalization", "UML_Message",
                      "UML_Transition", "UML_Dependency", "UML_Realization"}
@@ -57,11 +65,20 @@ _NUM = re.compile(r"-?\d*\.?\d+")
 
 
 def is_edge(concept: str) -> bool:
+    """Whether a block is a relationship rather than an element.
+
+    A relation block is named <Source><Target><RelationType>, so it is always
+    strictly longer than the relation type itself. A concept equal to a bare
+    suffix is an element that happens to share the name -- which is why the
+    test excludes an exact match as well as the junction elements.
+    """
     if not concept:
+        return False
+    if concept in JUNCTION_ELEMENTS:
         return False
     if concept in UML_EDGE_CONCEPTS:
         return True
-    return any(concept.endswith(s) for s in EDGE_SUFFIXES)
+    return any(concept.endswith(s) and concept != s for s in EDGE_SUFFIXES)
 
 
 def path_bbox(chunk: str):

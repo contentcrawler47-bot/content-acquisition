@@ -164,6 +164,12 @@ not a type** — 339 service domains on view 54486 are drawn as
 path outlines, so `bianlib/geometry.py` walks the path command list and falls
 back to `<rect>` only where there is one.
 
+A third trap, found by the first full run: **an ArchiMate junction is a
+connector node, not a relationship.** A relation block is named
+`<Source><Target><RelationType>`, so recognising one by suffix also catches the
+bare element `OrJunction`. `is_edge()` therefore requires the concept to be
+strictly longer than the suffix, and names the junction elements outright.
+
 ## The scheduled week
 
 Everything runs on Monday, and **the order is load-bearing**.

@@ -45,12 +45,12 @@ from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
 #: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.4.0"
+SCHEMA_VERSION = "1.4.1"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
 #: reason: derived output must say what derived it.
-PARSER_VERSION = "3"
+PARSER_VERSION = "4"
 
 #: Scopes. `model-only` reads the shards and index files and no view pages,
 #: which is the whole landscape model in about a minute. `full` additionally

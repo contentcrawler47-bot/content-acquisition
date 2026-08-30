@@ -439,6 +439,15 @@ def check_integrity(doc: dict, result: Result, args) -> None:
         result.count(ok, len(parented),
                      "containment resolves within its view",
                      expected=len(parented))
+        # Every edge must have both endpoints. Checking only the edges that
+        # already had one hid 13 misclassified junction elements sitting in
+        # the edge collection with neither -- a check that skips the empty
+        # cases cannot see the case where everything is empty.
+        both = sum(1 for e in gedges
+                   if e.get("from_node") and e.get("to_node"))
+        result.count(both, len(gedges), "every geometry edge has endpoints",
+                     expected=len(gedges))
+
         ends = [e for e in gedges if e.get("from_node") or e.get("to_node")]
         ok = sum(1 for e in ends
                  if e.get("from_node") in by_view.get(e["view"], ())
