@@ -32,7 +32,23 @@ that offset, or the slice comes back empty.
 |---|---|
 | Sequence | `UML_Interaction`, `UML_Lifeline`, `UML_LifelineElement`, `UML_LifelineLine`, `UML_ExecutionSpecification`, `UML_Message`, `UML_CombinedFragment` |
 | Class | `UML_Class`, `UML_Enumeration`, `UML_Interface`, `UML_DataType`, `UML_Attribute`, `UML_Association`, `UML_Generalization`, `ViewGraphic`, `ViewHyperlink` |
-| ArchiMate | a different set entirely, not examined |
+| ArchiMate | elements by layer — `StrategyCapability`, `BusinessObject`, `BusinessEvent`, `BusinessFunction`, `CompositeGrouping`, `MotivationGoal` and siblings; relations named `<Source><Target><RelationType>`; plus `Canvas`, `ViewGraphic`, `ViewHyperlink`, `OrJunction` |
+
+**No `UML_` prefix appears on any ArchiMate view type**, so a UML converter
+cannot be extended to reach them — they need a separate renderer over the same
+node-and-edge structure.
+
+**The ArchiMate concept is a shape, not a type.** Read `bizzsemantic` into the
+model for what a thing is; `bizzconcept` only says how it was drawn.
+
+**ArchiMate nodes have no `<rect>`** — they are rounded-rectangle `<path>`
+outlines. One bounding-box walker over the path command list serves both
+notations, with `<rect>` as a fast path where there is one. Containment then
+derives from the smallest enclosing box, exactly as it does for class
+attributes.
+
+**`Junction` and `OrJunction` are elements, not relations**, even though the
+relation naming convention ends in the same word.
 
 ## Sequence diagrams
 

@@ -67,6 +67,11 @@ model and nothing complains.
 }
 ```
 
+**`typeIconPath` sits on the wrapper**, beside `"data"` — not inside `data[0]`
+with `name` and `type`. Its shape is `data/icons/<Notation>/<Type>.png`, and
+the notation is the segment after `icons`. Present on every object; absent only
+if you look in the wrong place.
+
 **Category = first stereotype**, falling back to `type` when absent — and a
 **blank stereotype value counts as absent**, or the category comes out empty,
 matches no allowlist, and the object silently disappears.

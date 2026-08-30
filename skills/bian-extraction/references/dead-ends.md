@@ -138,3 +138,43 @@ strays as a quality metric while discarding the content.
 the sample did not contain.** This is the same failure as dead end 2 — a
 partial read that looked complete — and the same failure as a synthetic test
 fixture built from the same assumption as the code it validates.
+
+## 13. Reading `typeIconPath` from the first data entry
+
+**Tried:** looking for the notation field inside `data[0]`, alongside `name`
+and `type`, where every other object attribute lives.
+
+**Refuted by:** it resolved for **0 of 128,270 objects**. The field sits on the
+object *wrapper*, beside `data`, not inside it.
+
+**Lesson:** the check said NOT MEASURED rather than reporting an empty column,
+which is the only reason it was caught in review rather than shipped. A count
+of zero from a lookup deserves the same suspicion as a failed fetch.
+
+## 14. Counting distinct `bizzsemantic` as a view's members
+
+**Tried:** taking the number of distinct `bizzsemantic` values in a page's SVG
+as the count of objects on that view, which matched `objectsOnViews` exactly on
+the first view checked.
+
+**Refuted by:** two more views — 65 against 48 members, and 737 against 395.
+The extras are the `is equal to` UML twin drawn nested behind each element,
+carrying `bizzsemantic` and `bizzid` but no `bizzconcept`.
+
+**Lesson:** one confirming sample again. And `objectReferences` in the per-view
+data file *does* equal membership — but only on ArchiMate views; a class
+diagram carries more references than members.
+
+## 15. Recognising relations by name suffix alone
+
+**Tried:** treating any concept ending in a known relation type as a relation,
+since relation blocks are named `<Source><Target><RelationType>`.
+
+**Refuted by:** `OrJunction` ends with `Junction`. Thirteen connector *nodes*
+landed in the edge collection with no endpoints, invisible to a renderer
+drawing nodes and skipped by one drawing edges.
+
+**Lesson:** a composite name is always strictly longer than its suffix, so a
+concept equal to a bare relation type is an element. The check that should have
+caught it asked whether edges that already had one endpoint resolved — **a
+check cannot see the population its own filter excludes.**

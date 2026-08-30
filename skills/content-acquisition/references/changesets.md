@@ -29,6 +29,9 @@ other file is final. The sequence that works:
 3. Regenerate: `python3 tools/repo_manifest.py --write`.
 4. Assemble the zip.
 5. Test by applying it to a pristine copy (see below).
+6. Hand it over with **both digests and the filename to upload it under** —
+   *Apply changeset* reads a default path, and a zip uploaded under its own name
+   with the input left alone fails having read nothing.
 
 Regenerating the manifest first and then editing produces a changeset that
 fails verification after writing — recoverable, but it wastes a run.

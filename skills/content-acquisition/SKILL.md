@@ -3,7 +3,7 @@ name: content-acquisition
 description: Operate the content-acquisition project — a GitHub Actions and Google Drive pipeline that harvests reference content from external sources, renders it to markdown and PlantUML, and publishes it privately for Claude to read. Use this skill whenever the user mentions content-acquisition, changesets, the harvest or publish workflows, adding a content source, repo digests or MANIFEST.sha256, or asks to change anything in that repo. Also use it when they mention BIAN together with harvesting, publishing or automation, or when a GitHub Actions log from this project is shared. Critically, changes to this repo must be delivered as verified changeset zips, never as loose files to paste — so consult this skill before proposing any modification to it.
 ---
 
-<!-- skill: content-acquisition v3 | repo: changeset 028 -->
+<!-- skill: content-acquisition v4 | repo: changeset 036 -->
 
 # content-acquisition
 
@@ -12,6 +12,13 @@ A pipeline: external source → GitHub Actions → Google Drive → Claude.
 The user works from a locked-down machine, so **everything runs in the browser
 or in CI**. Never suggest installing software or running git locally unless
 they say they are on a personal machine.
+
+**So a capability with no workflow behind it has not been shipped.** A stage
+was once delivered as a library and a CLI command with nothing in CI invoking
+it, and the handover presented the absence of a token requirement as an
+advantage without naming the cost: it could not be run at all. Adding a
+capability means adding the entry point that reaches it, or saying plainly that
+it is unreachable until a later changeset.
 
 ## This file holds lessons, not measurements
 
@@ -59,7 +66,11 @@ as the task requires: `PROJECT-DESIGN.md` (rationale), `DECISION-LOG.md`
 digest history), `METHOD.md` (working method for a new source),
 `BIAN-EXTRACTION-REFERENCE.md`.
 
-Never assert a digest, an expiry, or what is outstanding from memory. **This
+Never assert a digest, an expiry, or what is outstanding from memory — **and do
+not infer the current state from your own last action either.** Having handed
+over a changeset is not the same as it having been applied; a digest was once
+written into a durable document on that basis. It happened to be right, which
+is luck rather than method. **This
 applies to the environment too:** a handover claimed a `references/` folder did
 not exist, and it was repeated for two sessions without anyone running `ls`. It
 did exist. Check the filesystem rather than inheriting a claim about it, and
@@ -84,6 +95,12 @@ changeset-NNN.zip
 
 Then the user uploads it to `changesets/` and runs **Apply changeset**, first
 with `dry_run: true`, then `false`.
+
+**The workflow reads one specific path by default.** Its `zip` input has a
+default filename, and a zip uploaded under its own name with the input left
+alone fails at the first step having read nothing — a confusing failure,
+because the changeset is fine. Either upload it under the expected name or set
+the input, and say which when handing it over.
 
 `references/changesets.md` has the format, what the applier enforces, and the
 mistakes already made. **Read it before building one** rather than reading
@@ -178,7 +195,23 @@ documents in this repo — it is public and they are deliberately not.
   and say NOT MEASURED when none did.
 - **Do not build the fixture from the same belief as the code.** A synthetic
   fixture written alongside the code tests the assumption twice instead of once
-  against reality. Build fixtures from observed data.
+  against reality. Build fixtures from observed data. A fixture whose keys were
+  all unique later hid a fault that the real data — where one key repeats
+  hundreds of times — exposed immediately.
+- **A check cannot see the population its own filter excludes.** A validator
+  asked whether edges that already had one endpoint resolved; the ones with
+  neither were never examined, and thirteen misclassified records survived a
+  full run and its review. Ask what a check filters out before asking what it
+  asserts.
+- **Confirm which check fired.** A round of mutation tests came back red and was
+  nearly reported as proof the checks worked. An earlier check was failing first
+  and masking every one of them. A red result is not evidence that the check you
+  were testing works.
+- **Promote code that has run against the real source rather than rewriting
+  it.** Moving a one-off probe's function into the library immediately exposed
+  that the consuming code assumed the wrong data shape and had never run. A
+  reimplementation would have reproduced the assumption, because the assumption
+  belonged to whoever was writing.
 - **A second copy is a second thing to keep right**, and the one nobody reads
   is the one that rots. Learned three times here: duplicated changeset history
   that went three changesets stale, a duplicated extraction reference that
@@ -198,7 +231,9 @@ entry. If there is none, it is a description and may be revised.
 
 The constraint that *is* real is **nothing installed on the user's machine**.
 CI was never the constraint — it has downloaded pinned third-party binaries
-since early on, and installs one pinned Python dependency for the API source.
+since early on, and installs pinned, hash-checked Python dependencies where a
+source or a stage needs them. Read `requirements*.txt` for what those are; a
+count here would be a measurement.
 
 ## Diagnosing a failed run
 
@@ -216,6 +251,12 @@ failure.
 **Ask for the failing job or stage specifically**, not the whole log, and ask
 for it as an **uploaded file** — pasting inline has repeatedly arrived empty in
 this project.
+
+**For a question about the data rather than the run, ask for the output
+artifact.** A workflow's artifact unzips in the sandbox and can be queried with
+scripts over the whole population; only the answers enter the context window,
+not the megabytes. Several questions that resisted reasoning were settled
+exactly this way in minutes.
 
 `references/troubleshooting.md` lists the failures already encountered with
 their causes.

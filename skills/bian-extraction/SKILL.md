@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v3 | repo: changeset 028 -->
+<!-- skill: bian-extraction v4 | repo: changeset 036 -->
 
 # BIAN Service Landscape extraction
 
@@ -83,6 +83,20 @@ An object's category is its **first stereotype, falling back to its UML
 `type`**. Treat a blank stereotype value as absent, or the category comes out
 empty and the object matches no allowlist and disappears.
 
+**Notation is a separate axis from category, and it is on the object wrapper.**
+`typeIconPath` sits beside `data`, not inside `data[0]`, and its shape is
+`data/icons/<Notation>/<Type>.png` — so the notation is the path segment after
+`icons`, read structurally rather than by matching substrings of the filename.
+Looked for one level too deep it is simply absent, and a run once resolved it
+for none of the objects while reporting nothing wrong.
+
+Three notations exist: UML, ArchiMate and a model-package notation nothing had
+noticed. **ArchiMate is not a synonym for furniture** — several of the most
+wanted BIAN categories are ArchiMate-notated and already harvested, while a
+category can span more than one notation. So a selective extraction keys on
+notation **and** category, and a renderer reads notation per object rather than
+inferring it from the category.
+
 `references/data-files.md` has the parser, the object payload shape, the
 relation verbs and the allowlist.
 
@@ -105,7 +119,15 @@ from UML classes. Dead end 11 has the numbers.
 ## Getting the diagrams
 
 `objectsOnViews` inverted gives diagram membership, and the member count is a
-good size estimate before fetching. Then fetch `views/view_<id>.html` and parse
+good size estimate before fetching.
+
+**A view's members are not all nodes.** `objectsOnViews` lists everything drawn
+on the view, relations included — on one sampled view, 27 of 48 members are
+relation objects. It is the right weight for balancing work, because cost
+tracks everything drawn, but anything reading it as "objects placed on the
+view" is wrong by up to half. Membership can also name a *view*: a diagram
+drawn on another diagram, which resolves as an object only when that view is
+itself an object in the model. Then fetch `views/view_<id>.html` and parse
 the inline SVG, where every element carries `bizzconcept` (the UML metaclass),
 `bizzid` (the diagram element) and `bizzsemantic` (the model object it
 depicts).
@@ -134,6 +156,39 @@ carry a title in `UML_Interaction`'s label; class diagrams carry none. Taking
 the name from `insiteViews` avoids a second request per class diagram, and
 stops every untitled class diagram sharing a filename and overwriting the
 others.
+
+### ArchiMate views
+
+Everything above is UML. ArchiMate views differ in ways that each cost a run:
+
+- **The concept is a shape, not a type.** Hundreds of service domains are drawn
+  as a capability's shape. `bizzconcept` says how a thing was depicted;
+  **`bizzsemantic` into the model says what it is**. Anything classifying from
+  the concept mislabels at scale.
+- **Nodes carry no `<rect>`.** They are rounded-rectangle `<path>` outlines, so
+  a rect-matching parser finds nothing at all on some view types, and a path's
+  first and last point are nearly identical on a closed outline. Walk the
+  command list for a bounding box, with `<rect>` as a fast path.
+- **A junction is a node, not a relationship.** Relation blocks are named
+  `<Source><Target><RelationType>`, so recognising one by suffix also catches
+  the bare element `OrJunction`. Require the concept to be strictly longer than
+  the relation type.
+- **Containment is derivable** by smallest enclosing box, and exact — grouping
+  boxes nest several deep, and that nesting is what a Total view is *for*.
+- Pages also draw their own furniture — hyperlinks, charts, interface controls
+  — carrying no `bizzsemantic`, or one that is in no shard. Count them, do not
+  assume every drawn element is model content.
+
+### Two page-reading traps
+
+**`objectReferences` equals membership on ArchiMate views, not on UML ones.** A
+class diagram carries more references than members. Do not generalise from one
+view type.
+
+**Distinct `bizzsemantic` is not a member count.** It over-counts substantially,
+because each element is drawn with its `is equal to` UML twin nested behind it —
+the semantic-to-UML bridge, present on the page as well as in the relation
+graph.
 
 `references/view-pages.md` has the concept inventory, the extraction gotchas,
 connector path handling and diagram sizing.
