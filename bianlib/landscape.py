@@ -272,9 +272,38 @@ def _documentation(entry) -> dict:
     return out
 
 
-def _flatten(value):
+#: How deep a property value may nest before flattening gives up. Structures
+#: were measured at depth 1 (probe run 90418066705); the cap exists so a
+#: cyclic value cannot hang a harvest, not because 8 is known to be needed.
+FLATTEN_MAX_DEPTH = 8
+
+
+def _flatten(value, depth: int = 0):
+    """One property value as text, or a list of texts for a collection.
+
+    Every shape the landscape actually uses is handled here, because anything
+    that falls through to "" is dropped by render() WITHOUT A TRACE -- the row
+    is skipped and nothing says a value was there. That is how 50,868
+    `structure` values and 987 booleans stayed out of the published bundle
+    unnoticed since the first harvest: parsed, found, discarded silently.
+
+    Shapes and counts are from probe run 90418066705 over all 128,270 objects:
+    string 45,192, structure 50,868, object 31,528, collection 17,117,
+    bool 987, link 953, rtf 363, int 4, float 3.
+
+    `rtf` is deliberately still unhandled. Its internal shape has never been
+    measured, and guessing at it here would be the same mistake in a new
+    place. 363 values, named in the handover as outstanding.
+    """
+    if depth > FLATTEN_MAX_DEPTH:
+        return ""
     if isinstance(value, str):
         return value.strip()
+    # bool before int: bool is a subclass of int, so the order matters.
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
     if isinstance(value, dict):
         kind = value.get("type")
         if kind == "link":
@@ -283,7 +312,21 @@ def _flatten(value):
         if kind == "object":
             return _d(value.get("value")).get("name", "")
         if kind == "collection":
-            return [x for x in (_flatten(i) for i in _l(value.get("value"))) if x]
+            return [x for x in (_flatten(i, depth + 1)
+                                for i in _l(value.get("value"))) if x]
+        if kind == "structure":
+            # A record of named fields, rendered inline so that a service
+            # operation with 54 parameters stays readable. Source key order is
+            # preserved: for SO parameters it is the parameter signature, and
+            # reordering it would make the output harder to scan, not easier.
+            parts = []
+            for key, item in _d(value.get("value")).items():
+                text = _flatten(item, depth + 1)
+                if isinstance(text, list):
+                    text = ", ".join(text)
+                if text:
+                    parts.append(f"{key}: {text}")
+            return "; ".join(parts)
     return ""
 
 
