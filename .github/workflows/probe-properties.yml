@@ -1,0 +1,68 @@
+name: Probe — object property tables
+
+# What is in the per-object property tables, and is the extract right to drop
+# them?
+#
+# `landscape._properties()` parses a property table off every object and
+# `Landscape.render()` emits it, so the CURRENTLY PUBLISHED bundle contains it.
+# `extract.build()` does not, so a stage 2 body renderer reading the extract
+# cannot reproduce it — and nothing would fail if that shipped: the counts
+# would be unchanged and only the `### <group>` sections would vanish.
+#
+#   T5a  value shape per field: string, link, object reference, collection
+#   T5b  do references resolve to known object ids
+#   T5c  are those references already edges in the relation graph
+#   T5d  serialised bytes per group, so the decision is not taken blind
+#
+# Prints NO verdict — the previous probe's summary line was computed by the
+# same code that gathered its evidence and was wrong while the evidence was
+# right. Prints link hosts, never full URLs, and one short sample per field:
+# logs on a public repo are world-readable and the values are BIAN's content.
+#
+# References no secrets and writes nothing back. Delete once the answers are
+# recorded on Drive.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Source id to probe
+        default: bian-v14
+        required: false
+      delay:
+        description: Seconds between requests
+        default: "1.0"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-properties
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: What is in the property tables?
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Probe object property tables
+        run: |
+          python3 tools/probe_properties.py \
+            --source "${{ inputs.source }}" \
+            --delay "${{ inputs.delay }}" \
+            --json properties.json
+
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-properties
+          path: properties.json
+          if-no-files-found: warn
+          retention-days: 90
