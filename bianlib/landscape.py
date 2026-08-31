@@ -291,9 +291,11 @@ def _flatten(value, depth: int = 0):
     string 45,192, structure 50,868, object 31,528, collection 17,117,
     bool 987, link 953, rtf 363, int 4, float 3.
 
-    `rtf` is deliberately still unhandled. Its internal shape has never been
-    measured, and guessing at it here would be the same mistake in a new
-    place. 363 values, named in the handover as outstanding.
+    `rtf` is HTML despite its name, and is cleaned with the same `clean_html`
+    that `_documentation` uses. Measured from extract run 33373471167 rather
+    than guessed: all 1,794 values are shaped {"type": "rtf", "value": <str>}
+    with no variants, 1,422 of them empty, and the 372 carrying text hold
+    only <p>, <span>, &nbsp; and &quot; -- exactly what clean_html reduces.
     """
     if depth > FLATTEN_MAX_DEPTH:
         return ""
@@ -311,6 +313,13 @@ def _flatten(value, depth: int = 0):
             return f"{v.get('title', '')} — {v.get('location', '')}".strip(" —")
         if kind == "object":
             return _d(value.get("value")).get("name", "")
+        if kind == "rtf":
+            # Named rtf, but the markup is HTML: <p>, <span>, &nbsp;, &quot;
+            # and nothing else across all 1,794 values. Cleaned rather than
+            # passed through, because markup reaching the output is what
+            # core/checks.py flags as clean_html() not having been applied.
+            text = value.get("value")
+            return clean_html(text) if isinstance(text, str) else ""
         if kind == "collection":
             return [x for x in (_flatten(i, depth + 1)
                                 for i in _l(value.get("value"))) if x]
