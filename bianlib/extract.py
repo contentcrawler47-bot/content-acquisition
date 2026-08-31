@@ -359,6 +359,11 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
                                     for g in (geometry or {}).values()),
             "geometry_unboxed_concepts": _merge_counts(
                 g.get("unboxed_concepts") for g in (geometry or {}).values()),
+            "geometry_endless_edges": sum(g.get("endless_edges", 0)
+                                          for g in (geometry or {}).values()),
+            "geometry_endless_edge_concepts": _merge_counts(
+                g.get("endless_edge_concepts")
+                for g in (geometry or {}).values()),
             "notation_unresolved": notation_missing,
             "malformed_objects": len(malformed),
             "objects_with_properties": with_properties,

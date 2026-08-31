@@ -490,6 +490,16 @@ def check_integrity(doc: dict, result: Result, args) -> None:
                        f"{detail} - {way} than expected; compare the concepts "
                        f"below against the previous run rather than assuming "
                        f"a cause")
+        endless = status.get("geometry_endless_edges", 0)
+        if endless:
+            result.add(WARN, "edges dropped for having no endpoints",
+                       f"{endless} - "
+                       + ", ".join(f"{k} {v}" for k, v in sorted(
+                           (status.get("geometry_endless_edge_concepts")
+                            or {}).items(), key=lambda kv: (-kv[1], kv[0]))[:6]))
+        else:
+            result.add(PASS, "edges dropped for having no endpoints", "0")
+
         if by_concept:
             # Sorted here rather than upstream: the extract is written with
             # sort_keys=True so the content digest is stable, which discards

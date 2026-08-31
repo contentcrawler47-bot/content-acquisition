@@ -40,9 +40,24 @@ from bianlib import views as V
 #: relation types are recognised by suffix. The set is closed and was measured
 #: by the ArchiMate probe; `Realization` is included because the model uses it
 #: heavily even though the sampled pages did not draw one.
+#: Relation type names, as they appear at the END of a composite concept.
+#:
+#: BIAN'S SPELLING IS MIXED, and this list carried the wrong variant for one
+#: of them until changeset 051. Measured over 18,874 geometry blocks:
+#:   `Realisation`   2,968 blocks   `Realization`   0   <- BIAN uses BRITISH
+#:   `Specialization`   76 blocks   `Specialisation` 0   <- BIAN uses AMERICAN
+#: So neither spelling can be assumed from the other, and both variants of
+#: Realisation are kept: the cost is nothing and a flip upstream would
+#: otherwise re-break this silently.
+#:
+#: The consequence of getting it wrong was NOT a visible failure. 2,968
+#: relationship blocks were boxed and stored as ELEMENTS, 995 of them acting
+#: as parents in the containment tree, and only the 17 that happened to have
+#: no box ever surfaced -- in the by-concept breakdown added by changeset 050.
 EDGE_SUFFIXES = ("Triggering", "Association", "Flow", "Access", "Aggregation",
-                 "Specialization", "Assignment", "Composition", "Junction",
-                 "Influence", "Realization", "Serving")
+                 "Specialization", "Specialisation", "Assignment",
+                 "Composition", "Junction", "Influence",
+                 "Realization", "Realisation", "Serving")
 
 #: Junctions are connector NODES in ArchiMate, not relationships. The suffix
 #: test below catches `OrJunction` because it ends with `Junction`, which put
@@ -78,6 +93,16 @@ def is_edge(concept: str) -> bool:
         return False
     if concept in UML_EDGE_CONCEPTS:
         return True
+    # A second naming pattern: `<RelationType>Relation`, e.g.
+    # `TriggeringRelation` and `RealisationRelation`. The composite test below
+    # misses these because they end in "Relation" rather than in the type. The
+    # remainder is required to be a KNOWN type rather than testing for a bare
+    # "Relation" suffix, which could swallow an element that happens to end
+    # that way.
+    if concept.endswith("Relation"):
+        base = concept[:-len("Relation")]
+        if base in EDGE_SUFFIXES:
+            return True
     return any(concept.endswith(s) and concept != s for s in EDGE_SUFFIXES)
 
 
@@ -343,6 +368,8 @@ def parse_geometry(html: str, view_id) -> dict:
     bs = V.blocks(svg)
 
     nodes, edges, unboxed, skipped = [], [], 0, 0
+    endless = 0                     # edges whose path yields no endpoints
+    endless_concepts: dict = {}
     unboxed_concepts: dict = {}     # concept -> count, see below
     symbols: dict = {}              # symbol_id -> bounds, per page
     for bid, b in bs.items():
@@ -353,6 +380,15 @@ def parse_geometry(html: str, view_id) -> dict:
         label = V.label_for(bs, bid)
         if is_edge(concept):
             pts = V.path_endpoints(b["chunk"])
+            if not pts:
+                # Same rule as an unboxed block: an edge with no endpoints
+                # cannot be drawn or traversed, so it is dropped and COUNTED
+                # rather than stored as a record that fails a check later.
+                # Recorded by concept for the same reason -- a bare total
+                # cannot say which view type started producing them.
+                endless += 1
+                endless_concepts[concept] = endless_concepts.get(concept, 0) + 1
+                continue
             edges.append({
                 "edge_id": str(bid),
                 "object_id": b.get("semantic"),
@@ -401,6 +437,8 @@ def parse_geometry(html: str, view_id) -> dict:
         "edge_count": len(edges),
         "unboxed": unboxed,
         "unboxed_concepts": unboxed_concepts,
+        "endless_edges": endless,
+        "endless_edge_concepts": endless_concepts,
         "nodes": nodes,
         "edges": edges,
     }
