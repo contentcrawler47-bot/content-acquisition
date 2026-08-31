@@ -45,7 +45,7 @@ from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
 #: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.5.0"
+SCHEMA_VERSION = "1.6.0"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
@@ -168,6 +168,8 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
     objects, categories, notations = [], {}, {}
     notation_missing = 0
     malformed = []
+    with_properties = 0
+    property_groups_skipped = 0
 
     for oid, obj in landscape.objects.items():
         entry = _first_entry(obj)
@@ -193,6 +195,37 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
         docs = L._documentation(entry)
         if docs:
             record["documentation"] = docs
+
+        # Property tables, stored RAW and unfiltered.
+        #
+        # Raw because the shapes carry meaning that flattening destroys: a
+        # `structure` is a record of named fields, and `/ 6. SO parameters` is
+        # 45,263 of them holding the full parameter signature of every BIAN
+        # service operation -- name, direction, type, multiplicity. Flattened
+        # to text you can no longer tell which type belongs to which
+        # parameter. Measured over 128,270 objects by probe run 90418066705:
+        # 50,868 structure, 45,192 string, 31,528 object reference, 17,117
+        # collection, 987 bool, 953 link, 363 rtf.
+        #
+        # Unfiltered because the extract is the unfiltered stage 1 record and
+        # `select.py` is the only place the allowlist acts. Filtering here
+        # would put a second filter in a second place, and the useful content
+        # is owned by categories the allowlist excludes -- SO parameters hang
+        # off UML `Operation` objects, which are not published.
+        #
+        # A group whose value is not a mapping is skipped and COUNTED, never
+        # dropped in silence: render() has always skipped them, so if any
+        # exist we would rather see the number than assume it is zero.
+        props = {}
+        for group, fields in L._properties(entry).items():
+            if isinstance(fields, dict):
+                props[str(group)] = fields
+            else:
+                property_groups_skipped += 1
+        if props:
+            record["properties"] = props
+            with_properties += 1
+
         objects.append(record)
 
         categories[category] = categories.get(category, 0) + 1
@@ -311,6 +344,8 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
                                     for g in (geometry or {}).values()),
             "notation_unresolved": notation_missing,
             "malformed_objects": len(malformed),
+            "objects_with_properties": with_properties,
+            "property_groups_skipped": property_groups_skipped,
             "unresolved_members": unresolved_members,
         },
         "notations": [{"type": "Notation", "name": n, "object_count": c}

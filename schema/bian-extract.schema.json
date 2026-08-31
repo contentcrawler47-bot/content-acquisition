@@ -423,6 +423,13 @@
      "additionalProperties": {
       "type": "string"
      }
+    },
+    "properties": {
+     "description": "Raw property table off the source object: group name -> field name -> value. Stored unflattened because the shapes carry meaning -- a `structure` is a record of named fields, and `/ 6. SO parameters` holds 45,263 of them giving the full parameter signature of every BIAN service operation, which flattening to text destroys. Unfiltered, because the extract is the unfiltered stage 1 record and select.py is the only place the allowlist acts. Groups whose value is not a mapping are skipped by the extractor and counted in status.property_groups_skipped rather than dropped silently. Optional: extracts written before schema 1.6.0 carry no properties, and stage 2 must still read them.",
+     "type": "object",
+     "additionalProperties": {
+      "type": "object"
+     }
     }
    }
   },
