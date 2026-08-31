@@ -37,10 +37,9 @@ tools/
   landscape_census.py      landscape counts, with denominators stated
   view_to_plantuml.py      single-view conversion, for investigation
   publish_sample.py        the original small end-to-end proof
-  probe_*.py               one-off investigations, kept as evidence
 docs/ADDING_A_SOURCE.md
 changesets/                upload target for revision zips
-.github/workflows/         eighteen; six scheduled — see The scheduled week
+.github/workflows/         fifteen; six scheduled — see The scheduled week
 ```
 
 ## Sources
@@ -192,11 +191,17 @@ of the runs that just happened. Reindex was once at 04:30 and a source was
 added after it, which would have written a week-stale date every week.
 **Adding or rescheduling a source means checking reindex is still last.**
 
-The remaining workflows are on-demand: **Verify repo contents**, **Apply
-changeset**, **Check publishing target (Google Drive)**, **Publish sample to
-Drive**, **Sample — Savings Account diagrams**, and four one-off
-investigations (**Investigate — BIAN coverage gap**, three **Probe —**
-workflows) kept as evidence for the findings they produced.
+The remaining nine workflows are on-demand: **Verify repo contents**, **Apply
+changeset**, **Package skills**, **Check publishing target (Google Drive)**,
+**Census — BIAN landscape counts**, **Extract — BIAN v14 (stage 1)**,
+**Render — BIAN v14 (stage 2)**, **Publish sample to Drive** and
+**Sample — Savings Account diagrams**.
+
+**No probe workflows remain.** Each was written to answer a specific question
+before a design was committed to, and each was deleted once its findings were
+recorded — the reasoning is in `DECISION-LOG.md` under *Retiring a diagnostic
+rather than keeping it*. Restore one from git history if a question it
+answered reopens, rather than rewriting it.
 
 ## Extraction and publishing are separate
 
