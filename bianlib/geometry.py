@@ -343,7 +343,8 @@ def parse_geometry(html: str, view_id) -> dict:
     bs = V.blocks(svg)
 
     nodes, edges, unboxed, skipped = [], [], 0, 0
-    symbols: dict = {}          # symbol_id -> bounds, per page
+    unboxed_concepts: dict = {}     # concept -> count, see below
+    symbols: dict = {}              # symbol_id -> bounds, per page
     for bid, b in bs.items():
         concept = b.get("concept") or ""
         if concept in NON_ELEMENT or concept.startswith(("label", "icon")):
@@ -364,7 +365,14 @@ def parse_geometry(html: str, view_id) -> dict:
             continue
         box = box_of(b["chunk"], svg, symbols)
         if box is None:
+            # Counted BY CONCEPT, not just counted. A bare total cannot say
+            # whether it fell because junction elements regressed into the
+            # edge collection or because box_of gained a strategy -- both
+            # make it drop, and a check that guesses between them will
+            # eventually guess wrong. It did: changeset 049 recovered 39
+            # blocks and the check reported a suspected junction regression.
             unboxed += 1
+            unboxed_concepts[concept] = unboxed_concepts.get(concept, 0) + 1
             continue
         x, y, w, h = box
         nodes.append({
@@ -392,6 +400,7 @@ def parse_geometry(html: str, view_id) -> dict:
         "node_count": len(nodes),
         "edge_count": len(edges),
         "unboxed": unboxed,
+        "unboxed_concepts": unboxed_concepts,
         "nodes": nodes,
         "edges": edges,
     }

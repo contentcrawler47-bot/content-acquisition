@@ -146,6 +146,21 @@ def _first_entry(obj) -> dict:
     return {}
 
 
+def _merge_counts(dicts) -> dict:
+    """Sum per-view counters into one.
+
+    Deliberately NOT ordered by count: write() serialises with sort_keys=True
+    because the content digest depends on stable ordering, so any order chosen
+    here is discarded. Ordering for display is the reader's job -- see
+    check_extract.py, which sorts by count when it prints.
+    """
+    total: dict = {}
+    for d in dicts:
+        for k, v in (d or {}).items():
+            total[str(k)] = total.get(str(k), 0) + int(v)
+    return dict(sorted(total.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
           insite_models=None, models_url: str = "",
           models_tried: list | None = None, geometry: dict | None = None,
@@ -342,6 +357,8 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
             "views_with_geometry": len(geometry or {}),
             "geometry_unboxed": sum(g.get("unboxed", 0)
                                     for g in (geometry or {}).values()),
+            "geometry_unboxed_concepts": _merge_counts(
+                g.get("unboxed_concepts") for g in (geometry or {}).values()),
             "notation_unresolved": notation_missing,
             "malformed_objects": len(malformed),
             "objects_with_properties": with_properties,

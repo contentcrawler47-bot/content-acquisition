@@ -471,19 +471,34 @@ def check_integrity(doc: dict, result: Result, args) -> None:
         # collection with no endpoints.
         unboxed = status.get("geometry_unboxed", 0)
         want_unboxed = args.expect_geometry_unboxed
+        by_concept = status.get("geometry_unboxed_concepts") or {}
         detail = (f"{unboxed} across "
                   f"{status.get('views_with_geometry', 0)} views, "
                   f"expected {want_unboxed}")
         if unboxed == want_unboxed:
             result.add(PASS, "blocks without a box", detail)
-        elif unboxed < want_unboxed:
-            result.add(WARN, "blocks without a box",
-                       detail + " - FEWER than expected; check that junction "
-                       "elements are still classified as nodes (changeset 035)")
         else:
+            # The direction alone does NOT identify the cause, and an earlier
+            # version of this check asserted that it did. A fall can mean a
+            # junction reclassification regressed, or that box_of gained a
+            # strategy -- changeset 049 did the latter, recovered 39 blocks,
+            # and this check reported a suspected regression. So it now
+            # reports the direction and hands over the per-concept counts
+            # instead of naming a cause.
+            way = "FEWER" if unboxed < want_unboxed else "more"
             result.add(WARN, "blocks without a box",
-                       detail + " - more than expected; a view type may have "
-                       "started drawing blocks this parser cannot box")
+                       f"{detail} - {way} than expected; compare the concepts "
+                       f"below against the previous run rather than assuming "
+                       f"a cause")
+        if by_concept:
+            # Sorted here rather than upstream: the extract is written with
+            # sort_keys=True so the content digest is stable, which discards
+            # any order build() might have chosen.
+            top = sorted(by_concept.items(), key=lambda kv: (-kv[1], kv[0]))[:6]
+            result.add(PASS, "blocks without a box, by concept",
+                       ", ".join(f"{k} {v}" for k, v in top)
+                       + ("" if len(by_concept) <= 6
+                          else f", +{len(by_concept) - 6} more"))
 
     # Relation verbs, reported WITH the population each count is over.
     #
@@ -632,11 +647,15 @@ def main(argv=None) -> int:
                     help="known-unresolvable relation targets")
     ap.add_argument("--allow-missing-models", action="store_true",
                     help="downgrade a missing model index to a warning")
-    ap.add_argument("--expect-geometry-unboxed", type=int, default=29,
-                    help="blocks that legitimately have no box. Measured 29 "
-                         "on extract runs 6, 8 and 9; 13 of those are "
-                         "OrJunction connector nodes, which changeset 035 "
-                         "moved out of the edge collection")
+    ap.add_argument("--expect-geometry-unboxed", type=int, default=18,
+                    help="blocks that legitimately have no box. Measured 18 "
+                         "on extract run 33432579145, which is LOWER than the "
+                         "29 of runs 6-9 despite fetching 54 more views: "
+                         "changeset 049 taught box_of to resolve symbol nodes "
+                         "and recovered 39 blocks. The remainder is expected "
+                         "to be mostly junction connectors, which are drawn "
+                         "without a box by design -- read the by-concept line "
+                         "rather than trusting that sentence")
     ap.add_argument("--allow-unresolved-members", type=int, default=25,
                     help="memberships naming neither an object nor a view "
                          "(measured 15 of 127,588 on 29 August 2026)")
