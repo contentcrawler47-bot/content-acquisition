@@ -106,22 +106,41 @@ class BianSource(BaseSource):
                 optional=True),
         ]
 
-    #: View types whose PAGE is worth a request. Geometry is only worth
-    #: fetching where arrangement carries meaning that membership does not.
+    #: View types whose PAGE is worth a request.
     #:
-    #: Measured 30 August 2026 on four saved pages. A Total view earns it: 54486
-    #: holds 341 service-domain boxes inside 51 nested grouping boxes, and that
-    #: containment IS the value chain. A Capability map view does not: 53221 is
-    #: 12 nodes, no edges, every member already kept by the allowlist, so its
-    #: page adds a layout nobody will render. Architecture overview is a
-    #: navigation index at 0% coverage.
+    #: WIDENED 31 August 2026 to every ArchiMate view type BIAN publishes as a
+    #: page. This REVERSES the 30 August decision that fetched only the four
+    #: types where "arrangement carries meaning that membership does not",
+    #: which excluded Capability map view as "a layout nobody will render" and
+    #: Architecture overview as "a navigation index at 0% coverage".
     #:
-    #: Class and sequence diagrams are excluded because the existing harvest
-    #: already converts them; adding them here would double the request count
-    #: to no purpose.
+    #: Both statements were true and both are now beside the point. They
+    #: measured whether a page carries FACTS the model lacks. Measured across
+    #: all 608 stored views, it largely does not: 97% of drawn edges and 59% of
+    #: containments are already relations in the graph. But a diagram's value
+    #: is the CURATION -- someone chose these elements out of 128,270 -- and
+    #: stage 2 now renders every published ArchiMate view, so this list must
+    #: track what is worth DRAWING rather than what is worth knowing.
+    #:
+    #: Effect: 668 ArchiMate views published on the site, of which 608 already
+    #: had geometry. The 54 added here are Capability map view (42),
+    #: Architecture overview (6) and six singletons. About 54 extra requests,
+    #: ~1 minute at 1s pacing.
+    #:
+    #: Expect some to yield nothing, and that is not a fault: `Roadmap view`
+    #: is a single `Canvas` block with 0 members, and two capability maps have
+    #: 0 members. Six `Total view` records already fetch to nothing for the
+    #: same reason.
+    #:
+    #: Class and sequence diagrams stay excluded because the existing harvest
+    #: already converts them; adding them would double the request count for
+    #: output that exists.
     GEOMETRY_VIEW_TYPES = (
         "Total view", "Total view new style", "ArchiMate total view",
-        "Information structure view",
+        "Information structure view", "Capability map view",
+        "Architecture overview", "Business function view",
+        "Business Model Canvas", "Motivation view", "Roadmap view",
+        "Strategy motivation view", "Ecosystem view",
     )
 
     # -- stage 1: extract -------------------------------------------------
