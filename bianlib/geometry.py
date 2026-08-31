@@ -128,14 +128,161 @@ def path_bbox(chunk: str):
     return best
 
 
-def box_of(chunk: str):
-    """A block's box: <rect> where there is one, otherwise its path outline."""
+#: Path commands the symbol definitions use. Measured on both symbol-bearing
+#: pages: M m L l C c z Z and nothing else -- no arcs, no shorthand curves.
+#: A command outside this set is skipped rather than guessed at.
+_PATH_TOKEN = re.compile(r"[MmLlCcZzHhVv]|-?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+
+def _path_points(d: str) -> list:
+    """Every anchor and control point of a path, in path coordinates.
+
+    Relative commands are resolved against the running point, and a `moveto`
+    switches to an implicit `lineto` for its trailing pairs, which is what the
+    SVG grammar says and what these paths rely on.
+    """
+    toks = _PATH_TOKEN.findall(d)
+    pts, cx, cy, startx, starty, cmd, i = [], 0.0, 0.0, 0.0, 0.0, None, 0
+
+    def num():
+        nonlocal i
+        v = float(toks[i])
+        i += 1
+        return v
+
+    while i < len(toks):
+        t = toks[i]
+        if t.isalpha():
+            cmd = t
+            i += 1
+            if cmd in "Zz":
+                cx, cy = startx, starty
+                continue
+        if cmd is None:
+            i += 1
+            continue
+        rel, c = cmd.islower(), cmd.upper()
+        if c == "M":
+            x, y = num(), num()
+            cx, cy = (cx + x, cy + y) if rel else (x, y)
+            startx, starty = cx, cy
+            pts.append((cx, cy))
+            cmd = "l" if rel else "L"
+        elif c == "L":
+            x, y = num(), num()
+            cx, cy = (cx + x, cy + y) if rel else (x, y)
+            pts.append((cx, cy))
+        elif c == "H":
+            x = num()
+            cx = cx + x if rel else x
+            pts.append((cx, cy))
+        elif c == "V":
+            y = num()
+            cy = cy + y if rel else y
+            pts.append((cx, cy))
+        elif c == "C":
+            x1, y1, x2, y2, x, y = (num() for _ in range(6))
+            if rel:
+                x1, y1, x2, y2, x, y = (cx + x1, cy + y1, cx + x2,
+                                        cy + y2, cx + x, cy + y)
+            pts += [(x1, y1), (x2, y2), (x, y)]
+            cx, cy = x, y
+        else:
+            i += 1
+    return pts
+
+
+#: `translate(tx,ty) scale(sx,sy) translate(-ox,-oy)` -- the "scale about a
+#: reference point" idiom the symbol nodes use, and the only transform shape
+#: observed on them.
+SYMBOL_TRANSFORM = re.compile(
+    r"translate\(\s*(-?[\d.]+)[ ,]\s*(-?[\d.]+)\s*\)\s*"
+    r"scale\(\s*(-?[\d.]+)[ ,]\s*(-?[\d.]+)\s*\)\s*"
+    r"translate\(\s*(-?[\d.]+)[ ,]\s*(-?[\d.]+)\s*\)")
+
+SYMBOL_USE = re.compile(r'<use\s+xlink:href="#(symbol-[^"]+)"')
+
+
+def symbol_bounds(svg: str, symbol_id: str):
+    """Bounding box of a `<g id="symbol-...">` definition, in symbol space.
+
+    Bezier CONTROL points are included as well as anchors. A curve lies inside
+    the convex hull of its control polygon, so the box this returns always
+    CONTAINS the true one -- never smaller, occasionally larger. That is the
+    right direction to err for containment tests, which ask whether one box
+    encloses another.
+    """
+    m = re.search(r'<g id="%s">' % re.escape(symbol_id), svg)
+    if not m:
+        return None
+    seg, depth, i = svg[m.end():], 1, 0
+    while i < len(seg) and depth:
+        if seg.startswith("<g", i):
+            depth += 1
+        elif seg.startswith("</g>", i):
+            depth -= 1
+        i += 1
+    pts = []
+    for d in re.findall(r'\sd="([^"]+)"', seg[:i]):
+        pts += _path_points(d)
+    if not pts:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def symbol_box(chunk: str, svg: str, cache: dict):
+    """A symbol node's box, from its `<use>` reference and its transform.
+
+    Two ArchiMate view types draw elements as pictograms rather than shapes:
+    `Ecosystem view` uses `population-icon` and friends, `Business Model
+    Canvas` uses `sticky-note`. Those blocks carry no <rect> and no <path> of
+    their own -- just `<use xlink:href="#symbol-X">` inside a transform -- so
+    box_of() found nothing and every element on both views was counted as
+    unboxed. Measured on the two saved pages: 26 and 53 blocks, 79 in total,
+    which is the whole of both views.
+
+    The symbol is defined inline in the same SVG, so `cache` is per-page.
+    """
+    u = SYMBOL_USE.search(chunk)
+    t = SYMBOL_TRANSFORM.search(chunk)
+    if not u or not t:
+        return None
+    sid = u.group(1)
+    if sid not in cache:
+        cache[sid] = symbol_bounds(svg, sid)
+    b = cache[sid]
+    if not b:
+        return None
+    tx, ty, sx, sy, ox, oy = (float(g) for g in t.groups())
+    x0, x1 = tx + (b[0] - ox) * sx, tx + (b[2] - ox) * sx
+    y0, y1 = ty + (b[1] - oy) * sy, ty + (b[3] - oy) * sy
+    w, h = abs(x1 - x0), abs(y1 - y0)
+    if w <= 0 or h <= 0:
+        return None
+    return min(x0, x1), min(y0, y1), w, h
+
+
+def box_of(chunk: str, svg: str = "", symbols: dict | None = None):
+    """A block's box: <rect>, else its path outline, else its symbol.
+
+    Three strategies in increasing cost. `svg` and `symbols` are optional so
+    that a caller with only a chunk still gets the first two -- the symbol
+    strategy needs the whole document, because the symbol is defined elsewhere
+    in it.
+    """
     r = V.RECT_RE.search(chunk)
     if r:
         x, y, w, h = (float(v) for v in r.groups())
         if w > 0 and h > 0:
             return x, y, w, h
-    return path_bbox(chunk)
+    box = path_bbox(chunk)
+    if box is not None:
+        return box
+    if svg and symbols is not None:
+        return symbol_box(chunk, svg, symbols)
+    return None
 
 
 def _contains(outer, inner) -> bool:
@@ -196,6 +343,7 @@ def parse_geometry(html: str, view_id) -> dict:
     bs = V.blocks(svg)
 
     nodes, edges, unboxed, skipped = [], [], 0, 0
+    symbols: dict = {}          # symbol_id -> bounds, per page
     for bid, b in bs.items():
         concept = b.get("concept") or ""
         if concept in NON_ELEMENT or concept.startswith(("label", "icon")):
@@ -214,7 +362,7 @@ def parse_geometry(html: str, view_id) -> dict:
                 "from_node": None, "to_node": None,
             })
             continue
-        box = box_of(b["chunk"])
+        box = box_of(b["chunk"], svg, symbols)
         if box is None:
             unboxed += 1
             continue
