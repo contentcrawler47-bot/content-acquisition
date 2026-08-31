@@ -456,10 +456,61 @@ def check_integrity(doc: dict, result: Result, args) -> None:
                      expected=len(ends))
 
         # A page that parsed into nothing must not look like an empty page.
-        result.add(PASS if status.get("geometry_unboxed", 0) == 0 else WARN,
-                   "blocks without a box",
-                   f"{status.get('geometry_unboxed', 0)} across "
-                   f"{status.get('views_with_geometry', 0)} views")
+        #
+        # This compares against an EXPECTED value rather than demanding zero.
+        # Zero is not achievable and never was: junctions are connector nodes
+        # drawn without a box, so they legitimately yield none. Demanding zero
+        # made a check that could only ever warn, and a permanently warning
+        # check is noise that stops being read.
+        #
+        # The direction of a mismatch is the signal. Changeset 035
+        # reclassified OrJunction from edge to node; edges fell 3,680 -> 3,667
+        # and unboxed rose 16 -> 29 in the same step, the same 13 blocks moving
+        # between two counters. So a count BELOW the expectation suggests that
+        # reclassification has regressed and junctions are back in the edge
+        # collection with no endpoints.
+        unboxed = status.get("geometry_unboxed", 0)
+        want_unboxed = args.expect_geometry_unboxed
+        detail = (f"{unboxed} across "
+                  f"{status.get('views_with_geometry', 0)} views, "
+                  f"expected {want_unboxed}")
+        if unboxed == want_unboxed:
+            result.add(PASS, "blocks without a box", detail)
+        elif unboxed < want_unboxed:
+            result.add(WARN, "blocks without a box",
+                       detail + " - FEWER than expected; check that junction "
+                       "elements are still classified as nodes (changeset 035)")
+        else:
+            result.add(WARN, "blocks without a box",
+                       detail + " - more than expected; a view type may have "
+                       "started drawing blocks this parser cannot box")
+
+    # Relation verbs, reported WITH the population each count is over.
+    #
+    # Two figures in this project's reference data were recorded as a bare
+    # number against a verb when they were actually counts of one endpoint
+    # pair: `message end` was written as 9,564 (ExecSpec->ExecSpec) when the
+    # verb holds 10,292 edges in total, and `member end` as 6,605 (Class->
+    # Class) against 6,975. Both labels were right and both numbers were
+    # unusable, because nothing said which population they covered. Printing
+    # the dominant endpoint pair beside the total means a figure copied out of
+    # this log carries its own denominator.
+    if relations:
+        cat_of = {o.get("id"): o.get("category", "?") for o in objects}
+        per_verb = {}
+        for r in relations:
+            v = r.get("verb", "")
+            e = per_verb.setdefault(v, [0, {}])
+            e[0] += 1
+            pair = (cat_of.get(r.get("source"), "?"),
+                    cat_of.get(r.get("target"), "?"))
+            e[1][pair] = e[1].get(pair, 0) + 1
+        top = sorted(per_verb.items(), key=lambda kv: -kv[1][0])[:5]
+        for verb, (total, pairs) in top:
+            (a, b), n = max(pairs.items(), key=lambda kv: kv[1])
+            result.add(PASS, f"verb {verb!r}",
+                       f"{total} edges; largest pair {a} -> {b} = {n} "
+                       f"({n / total:.0%})")
 
     # The allowlist is imported, never restated. This reports what stage 2
     # would select from this extract without running stage 2.
@@ -581,6 +632,11 @@ def main(argv=None) -> int:
                     help="known-unresolvable relation targets")
     ap.add_argument("--allow-missing-models", action="store_true",
                     help="downgrade a missing model index to a warning")
+    ap.add_argument("--expect-geometry-unboxed", type=int, default=29,
+                    help="blocks that legitimately have no box. Measured 29 "
+                         "on extract runs 6, 8 and 9; 13 of those are "
+                         "OrJunction connector nodes, which changeset 035 "
+                         "moved out of the edge collection")
     ap.add_argument("--allow-unresolved-members", type=int, default=25,
                     help="memberships naming neither an object nor a view "
                          "(measured 15 of 127,588 on 29 August 2026)")
