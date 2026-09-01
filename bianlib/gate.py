@@ -62,12 +62,12 @@ from __future__ import annotations
 import re
 
 from bianlib import landscape as L
-from core.render import clean_html_v2
+from core.render import ALNUM_RE, clean_html_v2
 
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "4"
+GATE_VERSION = "5"
 
 #: How many before/after pairs G26 carries in the extract. Bounded: the point
 #: is enough evidence to judge the change by, not a second copy of the corpus.
@@ -351,6 +351,15 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
     #: what it does rather than on what it is supposed to do. Bounded because
     #: this rides in the extract, and truncated per value for the same reason.
     clean_samples: list = []
+    #: G27. Values where the proposed cleaner emits a line carrying no letter
+    #: or digit -- punctuation that lost the text it belonged to. Run
+    #: 33477632935 produced one (object 141803) out of 25 carried pairs, in
+    #: markup that puts the quotes outside the list item. Counted every run so
+    #: the NEXT such case arrives as a number rather than as something spotted
+    #: by eye in a sample of 25.
+    clean_stranded = 0
+    clean_stranded_published = 0
+    stranded_samples: list = []
     nonstring_name = 0
     colliding_doc_titles = 0
     empty_after_clean = 0
@@ -435,6 +444,18 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                     # to show the fix working.
                     before = L.clean_html(value)
                     after = clean_html_v2(value)
+                    stranded = [ln for ln in after.split("\n")
+                                if ln.strip() and not ALNUM_RE.search(ln)]
+                    if stranded:
+                        clean_stranded += 1
+                        if published:
+                            clean_stranded_published += 1
+                            if len(stranded_samples) < GATE_CLEAN_SAMPLES:
+                                stranded_samples.append({
+                                    "object": str(oid), "category": category,
+                                    "lines": stranded[:6],
+                                    "before": before[:400],
+                                    "after": after[:400]})
                     if before != after:
                         clean_changed += 1
                         if published:
@@ -518,6 +539,19 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         f"{empty_after_clean_published} of them on published objects"))
     inv["documentation_published"] = doc_values_published
     inv["clean_html_v2_samples"] = clean_samples
+    inv["clean_html_v2_stranded_samples"] = stranded_samples
+
+    # G27 is FAIL-ALWAYS on the published population. A stranded delimiter is
+    # a value the current cleaner renders readably and the proposed one
+    # breaks, so it is a regression rather than a quantity to tolerate, and
+    # observe-only must not wave it through: the point of measuring before
+    # adopting is lost if the measurement can pass while broken.
+    findings.append(_finding(
+        "G27-CLEAN-STRANDED",
+        "published values where the proposed cleaner strands punctuation on "
+        "its own line",
+        clean_stranded_published, doc_values_published or 1, FAIL_ALWAYS,
+        f"{clean_stranded} across all objects"))
 
     # G26 is the decision this measurement exists to inform: adopt v2 or not.
     # THRESHOLDED on the PUBLISHED count, because a value nobody reads being

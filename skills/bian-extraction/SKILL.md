@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v9 | repo: changeset 056 -->
+<!-- skill: bian-extraction v10 | repo: changeset 057 -->
 
 # BIAN Service Landscape extraction
 
@@ -294,6 +294,17 @@ still running. Run both over the source, count how many values actually move,
 split that by the stage 2 allowlist, and carry a bounded set of before/after
 pairs in the output. Adopting a text change on the strength of a constructed
 example tests the example.
+
+**Confine a repair to the fault it repairs.** A rule that fixes text broken by
+tag-stripping will also reach text that was never broken — folding stray
+punctuation into its neighbour repaired the intended values and quietly merged
+a row of dots used as a visual separator onto the line above it. Mark the
+boundaries the repair itself introduces and act only on those, so values
+without the fault are provably untouched rather than argued to be.
+
+**Make the regression detector fail, on purpose, before trusting its zero.**
+Disable the fix and confirm the check fires; a detector that has only ever
+returned zero has not been shown to detect anything.
 
 ## Etiquette and legal
 

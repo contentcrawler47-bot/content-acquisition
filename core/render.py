@@ -59,16 +59,74 @@ def clean_html_v2(value: str) -> str:
     items with a newline, because the fault being corrected is missing
     separation -- not missing markdown. Restyling list items as bullets would
     change far more text than the 138 values that are actually broken.
+
+    STRANDED DELIMITERS. Some BIAN markup puts quotes OUTSIDE the list item:
+    `"<li>Request handling of an exceptional repayment",</li>"<li>Execute...`.
+    Breaking at every boundary isolates each bare `"` on its own line, which
+    run 33477632935 produced for object 141803 -- a value the old cleaner
+    rendered readably and this one broke. So a line carrying no alphanumeric
+    character is folded back into its neighbour: forward when it ends with an
+    opening delimiter, backward otherwise, since a trailing comma belongs to
+    the text before it and an opening quote to the text after.
+
+    That regression was found by measuring the change against the source
+    rather than by reading this function, and G27 now counts stranded lines
+    every run so the next such case is a number rather than a surprise.
     """
     if not value:
         return ""
     s = re.sub(r"<p[^>]*>|<br\s*/?>|</p>", "\n", value, flags=re.I)
     s = CELL_BOUNDARY_RE.sub(" ", s)
-    s = BLOCK_BOUNDARY_RE.sub("\n", s)
+    # A sentinel, not a newline, so the folding below can act ONLY on breaks
+    # this function introduced. Folding across pre-existing <p> and <br>
+    # breaks edits text whose boundaries were never being deleted: it merged
+    # a row of dots used as a separator onto the line above it in object
+    # 147626, and nine values moved that have no block tags at all.
+    s = BLOCK_BOUNDARY_RE.sub("\x00", s)
     s = TAG_RE.sub("", s)
     s = html.unescape(s).replace("\xa0", " ")
     s = WS_RE.sub(" ", s)
-    return "\n".join(l.strip() for l in s.splitlines() if l.strip()).strip()
+    out = []
+    for line in s.split("\n"):
+        parts = _fold_stranded([p.strip() for p in line.split("\x00")])
+        out.extend(p for p in parts if p)
+    return "\n".join(l.strip() for l in out if l.strip()).strip()
+
+
+#: A segment with no letter or digit in it is punctuation that lost its text.
+ALNUM_RE = re.compile(r"[^\W_]", re.UNICODE)
+
+#: Delimiters that open something, so the text they belong to follows them.
+OPENING_DELIMS = "\"'\u201c\u2018([{"
+
+
+def _fold_stranded(parts: list[str]) -> list[str]:
+    """Fold punctuation-only segments back into the text they belong to.
+
+    Applied only to segments split at a block boundary this module inserted,
+    never across a break that was already in the markup.
+    """
+    if len(parts) < 2:
+        return parts
+    out: list[str] = []
+    pending = ""
+    for part in parts:
+        if part and not ALNUM_RE.search(part):
+            if part.endswith(tuple(OPENING_DELIMS)):
+                pending += part          # belongs to the segment that follows
+            elif out:
+                out[-1] += part          # belongs to the segment before it
+            else:
+                pending += part
+            continue
+        if part:
+            out.append(pending + part)
+            pending = ""
+    if pending and out:
+        out[-1] += pending
+    elif pending:
+        out.append(pending)
+    return out
 
 
 def slugify(text: str) -> str:
