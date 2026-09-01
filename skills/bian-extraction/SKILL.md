@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v8 | repo: changeset 055 -->
+<!-- skill: bian-extraction v9 | repo: changeset 056 -->
 
 # BIAN Service Landscape extraction
 
@@ -285,6 +285,15 @@ cannot be re-checked by anyone, including the next run.
 ids that resolve to no object and no view you have; that is either presentation
 data or an entire namespace you have not captured, and only a check tells you
 which. Establishing it by hand once does not survive the next version.
+
+**Ship a replacement cleaner beside the old one and measure the delta before
+adopting it.** The extract stores text that has ALREADY been through the
+cleaner, so once the cleaner changes there is nothing left to compare against
+— the evidence for the change has to be gathered while the old behaviour is
+still running. Run both over the source, count how many values actually move,
+split that by the stage 2 allowlist, and carry a bounded set of before/after
+pairs in the output. Adopting a text change on the strength of a constructed
+example tests the example.
 
 ## Etiquette and legal
 

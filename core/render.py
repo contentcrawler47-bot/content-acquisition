@@ -33,6 +33,44 @@ def clean_html(value: str) -> str:
     return "\n".join(l.strip() for l in s.splitlines() if l.strip()).strip()
 
 
+#: Block-level tags whose CLOSE is a boundary between two pieces of text.
+#: `clean_html` deletes every tag it does not turn into a newline, and deletes
+#: it with no separator, so `<td>A</td><td>B</td>` becomes `AB`. Run
+#: 33475772058 measured 138 of 28,983 documentation values carrying li, ol,
+#: ul, table, td or tr.
+BLOCK_BOUNDARY_RE = re.compile(
+    r"</?\s*(?:li|ul|ol|tr|thead|tbody|table|div|h[1-6]|blockquote|dd|dt|dl)"
+    r"[^>]*>", re.I)
+
+#: A table CELL boundary is a separator within a line, not a line break.
+CELL_BOUNDARY_RE = re.compile(r"</\s*(?:td|th)\s*>", re.I)
+
+
+def clean_html_v2(value: str) -> str:
+    """`clean_html`, with block boundaries preserved as separators.
+
+    NOT YET USED BY THE PIPELINE. It ships here so the gate can run it beside
+    the current function over every real documentation value and report how
+    many actually change, before anything published moves. Adopting it on the
+    strength of a constructed example would be testing the example.
+
+    The change is deliberately minimal: insert the separator that deletion
+    removes, and nothing else. Cells are joined with a space and rows and list
+    items with a newline, because the fault being corrected is missing
+    separation -- not missing markdown. Restyling list items as bullets would
+    change far more text than the 138 values that are actually broken.
+    """
+    if not value:
+        return ""
+    s = re.sub(r"<p[^>]*>|<br\s*/?>|</p>", "\n", value, flags=re.I)
+    s = CELL_BOUNDARY_RE.sub(" ", s)
+    s = BLOCK_BOUNDARY_RE.sub("\n", s)
+    s = TAG_RE.sub("", s)
+    s = html.unescape(s).replace("\xa0", " ")
+    s = WS_RE.sub(" ", s)
+    return "\n".join(l.strip() for l in s.splitlines() if l.strip()).strip()
+
+
 def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-") or "other"
 

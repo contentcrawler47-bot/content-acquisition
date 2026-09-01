@@ -62,11 +62,16 @@ from __future__ import annotations
 import re
 
 from bianlib import landscape as L
+from core.render import clean_html_v2
 
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "3"
+GATE_VERSION = "4"
+
+#: How many before/after pairs G26 carries in the extract. Bounded: the point
+#: is enough evidence to judge the change by, not a second copy of the corpus.
+GATE_CLEAN_SAMPLES = 25
 
 # --- the declaration -------------------------------------------------------
 #
@@ -332,6 +337,20 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
     multi_data = 0
     multi_table = 0
     table_titles = 0
+    #: G26. What the proposed cleaner would actually change, measured on the
+    #: source rather than argued from an example. Split by whether the object
+    #: survives the stage 2 allowlist, because "138 values" and "138 PUBLISHED
+    #: values" are different claims and only the second is about what anyone
+    #: reads.
+    clean_changed = 0
+    clean_changed_published = 0
+    doc_values_published = 0
+    boundary_tag_published = 0
+    empty_after_clean_published = 0
+    #: A bounded before/after sample, so the next changeset can be judged on
+    #: what it does rather than on what it is supposed to do. Bounded because
+    #: this rides in the extract, and truncated per value for the same reason.
+    clean_samples: list = []
     nonstring_name = 0
     colliding_doc_titles = 0
     empty_after_clean = 0
@@ -339,6 +358,11 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
     doc_values = 0
 
     for oid, obj in objects.items():
+        # Whether stage 2 would publish this object. The allowlist is IMPORTED,
+        # never restated: a tool that re-declared it shipped a wrong published
+        # count in this project once already.
+        category = landscape.categories.get(str(oid), "")
+        published = L.is_wanted(category, landscape.names.get(str(oid), ""))
         for k in _keys_of(obj):
             _bump(wrapper_keys, k)
         data = L._l(L._d(obj).get("data"))
@@ -391,14 +415,38 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                          else L._d(content).get("value", ""))
                 if isinstance(value, str):
                     doc_values += 1
+                    if published:
+                        doc_values_published += 1
                     tags = _tags(value)
                     for t in tags:
                         _bump(html_tags, t)
                     boundary = tags - HANDLED_HTML_TAGS - INLINE_HTML_TAGS
                     if boundary:
                         boundary_tag_values += 1
+                        if published:
+                            boundary_tag_published += 1
                     if value.strip() and not L.clean_html(value):
                         empty_after_clean += 1
+                        if published:
+                            empty_after_clean_published += 1
+                    # G26: run both cleaners over the real value and record
+                    # what would move. This is the before/after, produced by
+                    # the run on the source, rather than by an example chosen
+                    # to show the fix working.
+                    before = L.clean_html(value)
+                    after = clean_html_v2(value)
+                    if before != after:
+                        clean_changed += 1
+                        if published:
+                            clean_changed_published += 1
+                            if len(clean_samples) < GATE_CLEAN_SAMPLES:
+                                clean_samples.append({
+                                    "object": str(oid),
+                                    "category": category,
+                                    "section": title,
+                                    "tags": sorted(boundary),
+                                    "before": before[:400],
+                                    "after": after[:400]})
         if tables > 1:
             multi_table += 1
 
@@ -466,13 +514,28 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         colliding_doc_titles, n_objects, THRESHOLDED))
     findings.append(_finding(
         "G23-DOC-EMPTY", "documentation values that clean to nothing",
-        empty_after_clean, doc_values, THRESHOLDED))
+        empty_after_clean, doc_values, THRESHOLDED,
+        f"{empty_after_clean_published} of them on published objects"))
+    inv["documentation_published"] = doc_values_published
+    inv["clean_html_v2_samples"] = clean_samples
+
+    # G26 is the decision this measurement exists to inform: adopt v2 or not.
+    # THRESHOLDED on the PUBLISHED count, because a value nobody reads being
+    # reformatted is not a risk to anything.
+    findings.append(_finding(
+        "G26-CLEAN-DELTA",
+        "published documentation values the proposed cleaner would change",
+        clean_changed_published, doc_values_published or 1, THRESHOLDED,
+        f"{clean_changed} across all objects; "
+        f"{len(clean_samples)} before/after pairs carried in the inventory"))
+
     findings.append(_finding(
         "G24-HTML-TAG", "documentation values carrying a boundary tag "
                         "clean_html deletes without a separator",
         boundary_tag_values, doc_values, THRESHOLDED,
         ", ".join(sorted(set(html_tags) - HANDLED_HTML_TAGS
-                         - INLINE_HTML_TAGS))))
+                         - INLINE_HTML_TAGS))
+        + f"; {boundary_tag_published} of them on published objects"))
     findings.append(_finding(
         "G25-NAME-TYPE", "names that are not strings",
         nonstring_name, n_objects, THRESHOLDED))
