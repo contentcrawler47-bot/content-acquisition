@@ -67,7 +67,7 @@ from core.render import ALNUM_RE, SEPARATING_TAGS, clean_html_stranded
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "8"
+GATE_VERSION = "9"
 
 #: How many evidence samples a finding carries in the extract. Bounded: the
 #: point is enough to judge a finding by, not a second copy of the corpus.
@@ -198,6 +198,18 @@ EXCLUSIONS = [
      "where": "landscape.is_structural (stage 2 only)",
      "why": "They carry no documentation and their edges render inline on "
             "each real object. Stage 1 keeps them; only the bundle drops them.",
+     "bound": None},
+    {"code": "X-VIEW-REFERENCES",
+     "what": "objectReferences and viewReferences in the per-view files",
+     "where": "never read; reported as G65",
+     "why": "MEASURED on run 33485083570: 504 of 530 objectReferences keys and "
+            "65 of 66 viewReferences keys resolve to no object and no view we "
+            "hold, while objectData and objectRelations resolve completely "
+            "(20 of 20 and 2 of 2). An id space used only by the reference "
+            "variables. A reference is not a membership claim, so the objects "
+            "they DO name being absent from membership is not loss -- but the "
+            "relation itself is unidentified, which is why this is a BELIEF "
+            "and G63 and G65 report it every run.",
      "bound": None},
     {"code": "X-VIEW-DATA", "what": "data/view_<id>_data.js (all seven vars)",
      "where": "never read on the bulk path",
@@ -716,13 +728,32 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                 # are the cheapest thing that could name the id space -- an
                 # `objectId` or a `name` in there settles it outright.
                 for key in sorted(loose)[:2]:
-                    entry = L._d(value).get(key) if isinstance(value, dict) else None
+                    entry = (value or {}).get(key) if isinstance(value, dict) \
+                        else None
+                    # TYPE FIRST, then keys if it happens to be a mapping.
+                    #
+                    # This read _keys_of(entry) and nothing else, so run
+                    # 33485083570 reported shape [] for all 504 unresolved ids
+                    # and an empty value_shapes histogram. The values are not
+                    # mappings, so asking for their keys asked the wrong
+                    # question and got an empty answer that reads exactly like
+                    # "nothing there". A probe that can only describe one shape
+                    # returns silence for every other one.
+                    kind = type(entry).__name__
+                    _bump(value_shapes, f"{var}:{kind}")
                     shape = sorted(_keys_of(entry))
                     for field in shape:
                         _bump(value_shapes, f"{var}.{field}")
                     if len(unresolved_examples) < GATE_CLEAN_SAMPLES:
-                        unresolved_examples.append(
-                            {"variable": var, "id": str(key), "shape": shape})
+                        unresolved_examples.append({
+                            "variable": var, "id": str(key), "kind": kind,
+                            "shape": shape,
+                            "length": len(entry)
+                            if isinstance(entry, (list, dict, str)) else None,
+                            # Bounded rendering. Structure, not content: these
+                            # are ids and type names, and the extract is not a
+                            # place to copy source text into by accident.
+                            "sample": repr(entry)[:160]})
 
         numeric = {k for k in vkeys if str(k).isdigit()}
         unknown = numeric - known_objects - known_views
@@ -762,31 +793,80 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
             for vid in L._l(vids):
                 members_of.setdefault(str(vid), set()).add(str(oid))
 
-        missing_members = 0
-        checked_members = 0
+        # SPLIT BY VARIABLE, and exclude the view's own diagram object.
+        #
+        # Run 33485083570 reported 28 of 46 as one number. Ten of those were
+        # the view's own diagram object: a view's id IS its diagram object's
+        # id (view 56180 is object 56180), so the container turning up in its
+        # own file is not missing membership. Of the rest, one was objectData
+        # and fourteen were objectReferences -- and those mean different
+        # things. `objectData` is the view's contents, so a gap there is
+        # membership we publish incompletely; `objectReferences` may be
+        # objects the view merely points at, which membership was never
+        # claiming to hold.
+        #
+        # One number over both could only ever be uninterpretable. This is the
+        # same aggregation fault as G63's 549 keys, one level down.
+        per_var_missing: dict = {}
         missing_examples: list = []
+        self_reference = 0
         for vid, payload in view_data.items():
             held = members_of.get(str(vid), set())
             for var, value in payload.items():
+                slot = per_var_missing.setdefault(
+                    var, {"checked": 0, "missing": 0})
                 for key in _keys_of(value):
                     if str(key) not in known_objects:
                         continue
-                    checked_members += 1
+                    if str(key) == str(vid):
+                        # The view's own diagram object. Counted separately so
+                        # the exclusion is visible rather than silent -- a
+                        # filtered-out population that leaves no trace is how
+                        # a number stops being checkable.
+                        self_reference += 1
+                        continue
+                    slot["checked"] += 1
                     if str(key) not in held:
-                        missing_members += 1
+                        slot["missing"] += 1
                         if len(missing_examples) < GATE_CLEAN_SAMPLES:
                             missing_examples.append(
                                 {"view": str(vid), "variable": var,
                                  "object": str(key)})
+        inv["view_membership"] = dict(per_var_missing,
+                                      **{"self_reference": self_reference})
         inv["view_membership_missing_examples"] = missing_examples
+
+        # G64 is the loss question, and it is asked of `objectData` ALONE:
+        # that variable is the view's own statement of its contents, and every
+        # id in it resolved on run 33485083570 (20 of 20). A gap between it and
+        # all_objects_on_views.js is membership we publish incompletely.
+        contents = per_var_missing.get("objectData", {"checked": 0,
+                                                      "missing": 0})
         findings.append(_finding(
             "G64-VIEW-MEMBERSHIP",
-            "objects named by a view's own data file that the published "
+            "objects in a view's own objectData that the published "
             "membership does not record for that view",
-            missing_members, checked_members or 1, THRESHOLDED,
-            "SAMPLE. Non-zero means all_objects_on_views.js is incomplete, "
-            "which is loss in something already published; zero means the "
-            "unresolved ids in G63 are a foreign space, not missing content",
+            contents["missing"], contents["checked"] or 1, THRESHOLDED,
+            "SAMPLE, excluding the view's own diagram object "
+            f"({self_reference} of those). Non-zero is loss in something "
+            "already published",
+            sampled=True))
+
+        # The reference variables are reported SEPARATELY and as REGISTERED.
+        # They are a relation we have not identified -- objects a view points
+        # at need not be objects it contains -- so counting them as loss would
+        # assert something no measurement supports. G63 is what would
+        # contradict the working belief that they are presentation data.
+        refs = {k: v for k, v in per_var_missing.items()
+                if k.endswith("References")}
+        findings.append(_finding(
+            "G65-VIEW-REFERENCES",
+            "objects a view's reference variables name that its membership "
+            "does not record",
+            sum(v["missing"] for v in refs.values()),
+            sum(v["checked"] for v in refs.values()) or 1, REGISTERED,
+            "SAMPLE. A reference is not a membership claim; reported so the "
+            "relation stays visible until it is identified",
             sampled=True))
 
         # Nothing on the bulk path reads this file, so anything it carries is

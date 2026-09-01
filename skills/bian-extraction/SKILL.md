@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v13 | repo: changeset 060 -->
+<!-- skill: bian-extraction v14 | repo: changeset 061 -->
 
 # BIAN Service Landscape extraction
 
@@ -337,6 +337,17 @@ identifiers over seven variables and twelve views cannot tell a foreign id
 space from missing content — the same total fits both. Attribute per variable
 and check per item; the shape of an unresolved entry's value is usually the
 cheapest thing that names its namespace.
+
+**A probe that can describe only one shape returns silence for every other
+one.** Asking for a value's dictionary keys when the value is a list reports an
+empty result that reads exactly like "nothing there". Record the type first,
+then the structure, then a bounded rendering.
+
+**A container is not a member of itself.** A view's id is its diagram object's
+id here, so the object turns up in its own view's file; counting that as
+missing membership put ten false positives into a finding of twenty-eight.
+When a check excludes a population, carry the excluded count in the output —
+a filter that leaves no trace makes the number it produces uncheckable.
 
 ## Etiquette and legal
 
