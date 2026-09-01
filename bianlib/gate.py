@@ -67,7 +67,7 @@ from core.render import ALNUM_RE, clean_html_v2
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "5"
+GATE_VERSION = "6"
 
 #: How many before/after pairs G26 carries in the extract. Bounded: the point
 #: is enough evidence to judge the change by, not a second copy of the corpus.
@@ -247,6 +247,12 @@ TAG_RE = re.compile(r"<\s*/?\s*([a-zA-Z][a-zA-Z0-9]*)")
 
 def _tags(html: str) -> set:
     return {m.lower() for m in TAG_RE.findall(html or "")}
+
+
+def _stranded_lines(text: str) -> set:
+    """Lines carrying no letter or digit -- punctuation without its text."""
+    return {ln.strip() for ln in text.split("\n")
+            if ln.strip() and not ALNUM_RE.search(ln)}
 
 
 def _bump(counter: dict, key, n: int = 1):
@@ -444,18 +450,36 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                     # to show the fix working.
                     before = L.clean_html(value)
                     after = clean_html_v2(value)
-                    stranded = [ln for ln in after.split("\n")
-                                if ln.strip() and not ALNUM_RE.search(ln)]
-                    if stranded:
-                        clean_stranded += 1
-                        if published:
-                            clean_stranded_published += 1
-                            if len(stranded_samples) < GATE_CLEAN_SAMPLES:
-                                stranded_samples.append({
-                                    "object": str(oid), "category": category,
-                                    "lines": stranded[:6],
-                                    "before": before[:400],
-                                    "after": after[:400]})
+                    # A stranding is a punctuation-only line the proposed
+                    # cleaner INTRODUCES, not one the value already had.
+                    #
+                    # This counted every bare-punctuation line in the output
+                    # regardless of origin, so run 33480408308 reported 2
+                    # published and 65 total where before and after were
+                    # byte-identical: BIAN's own markup puts a row of dots on
+                    # its own line (object 147626) and a lone full stop after
+                    # a citation (object 40452), and <p> breaks have always
+                    # rendered them that way. The check flagged the very value
+                    # the confined fold was built to protect.
+                    #
+                    # Measuring the presence of a symptom rather than the
+                    # delta is the same fault as reporting a count without its
+                    # denominator: it cannot distinguish what the change did
+                    # from what was already there.
+                    if before != after:
+                        introduced = _stranded_lines(after) - \
+                            _stranded_lines(before)
+                        if introduced:
+                            clean_stranded += 1
+                            if published:
+                                clean_stranded_published += 1
+                                if len(stranded_samples) < GATE_CLEAN_SAMPLES:
+                                    stranded_samples.append({
+                                        "object": str(oid),
+                                        "category": category,
+                                        "lines": sorted(introduced)[:6],
+                                        "before": before[:400],
+                                        "after": after[:400]})
                     if before != after:
                         clean_changed += 1
                         if published:
