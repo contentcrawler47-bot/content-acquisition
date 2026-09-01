@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v6 | repo: changeset 053 -->
+<!-- skill: bian-extraction v7 | repo: changeset 054 -->
 
 # BIAN Service Landscape extraction
 
@@ -250,6 +250,28 @@ thousand are not the same problem.
 failure threshold that goes only to a run log is the same silent drop, moved up
 one level. Put it in the output, where it travels with the artefact and diffs
 between runs.
+
+**A gate is only as good as its declaration, and a wrong declaration is worse
+than a missing check.** Declare a key the parser reads and forget one it also
+reads, and the gate raises a 100% finding out of nothing — which then swamps
+the aggregate that exists to catch many small real ones. Declare a key as
+handled when it is consumed on one variant and dropped on another, and a real
+drop hides behind a green check. Make the declaration as fine-grained as the
+parser, and treat a 100% finding as a suspected declaration fault before
+believing it.
+
+**Never sum shares across denominators.** A finding over a twelve-view sample
+and a finding over 128,270 objects cannot be added; carry a sampled finding
+separately and keep it out of any population aggregate.
+
+**Surplus is not loss, and must not be counted as it.** Holding more than an
+index declares is an asymmetry worth reporting every run and failing on never.
+
+**A landscape data file may declare several `var`s.** Read every assignment,
+not the first. Reading one where the file holds many is the same fault as
+reading one shard of forty-seven, and it produces an inventory that looks
+complete. Where a documented field is simply absent from what was sampled, that
+is NOT MEASURED — never a zero, and never evidence the field does not exist.
 
 ## Etiquette and legal
 

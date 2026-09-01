@@ -542,11 +542,12 @@
    "type": "object",
    "description": "One gate finding, always with its denominator. `affected` null means NOT MEASURED -- the observation could not be made, which is never the same as zero.",
    "required": [
-    "code",
-    "what",
     "affected",
+    "class",
+    "code",
     "denominator",
-    "class"
+    "sampled",
+    "what"
    ],
    "additionalProperties": false,
    "properties": {
@@ -585,6 +586,10 @@
     "share": {
      "type": "number",
      "minimum": 0
+    },
+    "sampled": {
+     "type": "boolean",
+     "description": "True when the denominator is a sample rather than the population. Such a finding may fail on its own but is excluded from the at-risk aggregate: a share over 12 sampled views and a share over 128,270 objects cannot be added together."
     }
    }
   },

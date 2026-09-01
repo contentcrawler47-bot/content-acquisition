@@ -66,7 +66,7 @@ from bianlib import landscape as L
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "1"
+GATE_VERSION = "2"
 
 # --- the declaration -------------------------------------------------------
 #
@@ -100,8 +100,15 @@ HANDLED_PROPERTY_TYPES = {"link", "object", "rtf", "collection", "structure"}
 #: `_relations_block` and `extract.build` read `via` and `to`.
 HANDLED_RELATION_KEYS = {"via", "to"}
 
-#: `Landscape.view_name` reads `name`. Nothing else in insiteViews is consumed.
-HANDLED_INSITE_VIEW_KEYS = {"name"}
+#: `Landscape.view_name` reads `name`. `id` is the view's own key echoed into
+#: the value and is read by nothing, declared for the same reason `id` is
+#: declared on the object wrapper: understood and deliberately redundant, not
+#: unnoticed. Omitting it made G40 report 2,285 of 2,285 -- a 100% finding that
+#: was entirely an error in this declaration, and which on its own supplied 100
+#: of the 101.57% sub-threshold aggregate on run 33464689986. A declaration
+#: fault does not just raise a false finding; it destroys the aggregate, which
+#: is the number meant to catch many small real ones.
+HANDLED_INSITE_VIEW_KEYS = {"id", "name"}
 
 #: `_models_index` reads `name` and `views`; within a view entry it reads `id`.
 HANDLED_MODEL_KEYS = {"name", "views"}
@@ -130,19 +137,29 @@ INLINE_HTML_TAGS = {"span", "b", "i", "em", "strong", "u", "a", "font", "sup",
 EXCLUSIONS = [
     {"code": "X-DATA-TAIL", "what": "data[1:] (non-first language entries)",
      "where": "Landscape._index, extract._first_entry",
-     "why": "Only data[0] is consumed. NOT a validated exclusion: no run has "
-            "established how many entries exist, because config_data.js is "
-            "probed and never parsed. Declared so it stops looking handled.",
+     "why": "Only data[0] is consumed. VALIDATED on run 33464689986: every "
+            "one of 128,270 objects carries exactly one data entry, all "
+            "lang 'en', and config_data.js declares one available language. "
+            "So this drops nothing today. It stays declared because that is "
+            "a fact about v14, not about the parser -- a second published "
+            "language would be silent content loss, and G20 is what would "
+            "say so.",
      "bound": 0},
     {"code": "X-TABLE-TAIL", "what": "second and later `table` categories",
      "where": "landscape._properties, landscape._stereotypes",
-     "why": "Both return on the first match. Unvalidated for the same reason.",
+     "why": "Both return on the first match. VALIDATED on run 33464689986: "
+            "42,861 table categories across 128,270 objects, never more than "
+            "one on an object, so the tail is empty.",
      "bound": 0},
     {"code": "X-TABLE-TITLE", "what": "`title` on a table category",
      "where": "landscape._properties",
-     "why": "Group names come from the content keys instead. The title has "
-            "never been observed to carry anything the groups do not.",
-     "bound": None},
+     "why": "Group names come from the content keys instead. MEASURED on run "
+            "33464689986: every table category carries a title, so this is a "
+            "real and universal drop rather than a theoretical one. Kept "
+            "because the titles have not been shown to carry anything the "
+            "group names do not -- which is a claim worth testing before the "
+            "bound is raised, not after. Reported every run as G15.",
+     "bound": 42861},
     {"code": "X-UNKNOWN-ROLE", "what": "relation verb `<unknown role>`",
      "where": "landscape.SKIP_RELATION_VERBS",
      "why": "Documented noise. The empty verb is in the same set and is NOT "
@@ -169,15 +186,24 @@ REGISTERED = "registered"
 NOT_MEASURED = "NOT MEASURED"
 
 
-def _finding(code, what, affected, denominator, cls, detail=""):
+def _finding(code, what, affected, denominator, cls, detail="",
+             sampled=False):
     """One finding, always with its denominator.
 
     `affected` may be None, which means NOT MEASURED -- the observation could
     not be made. That is never the same as zero, and evaluate() refuses to
     treat it as a pass.
+
+    `sampled` marks a finding whose denominator is a SAMPLE rather than the
+    population. Such a finding may still fail on its own, but it is excluded
+    from the at-risk aggregate: 1 of 12 sampled views is 8.3%, and adding that
+    to a share taken over 128,270 objects produces a number that means
+    nothing. A count is only interpretable against the denominator it came
+    from, and summing across denominators throws that away.
     """
     return {"code": code, "what": what, "affected": affected,
-            "denominator": denominator, "class": cls, "detail": detail}
+            "denominator": denominator, "class": cls, "detail": detail,
+            "sampled": bool(sampled)}
 
 
 def _keys_of(value) -> set:
@@ -238,16 +264,32 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
             "G02-MAPPING", "every id in the mapping has an object", None,
             None, FAIL_ALWAYS, "mapping ids not supplied"))
         findings.append(_finding(
-            "G03-UNMAPPED", "every object is named by the mapping", None,
-            None, THRESHOLDED, "mapping ids not supplied"))
+            "G03-SURPLUS", "objects the shards hold that the mapping does "
+                           "not name (surplus, not loss)", None, None,
+            REGISTERED, "mapping ids not supplied"))
     else:
         have = set(map(str, objects))
         findings.append(_finding(
             "G02-MAPPING", "every id in the mapping has an object",
             len(mapping_ids - have), len(mapping_ids), FAIL_ALWAYS))
+        # SURPLUS, NOT LOSS, and the two must not share a class.
+        #
+        # This counts objects the shards hold that objectDataMapping never
+        # names. We have MORE than the mapping declares, so no content is at
+        # risk and nothing here belongs in an at-risk aggregate. Measured at
+        # 1,359 of 128,270 (1.06%) on run 33464689986, where it sat above the
+        # provisional 0.5% loss threshold and would have failed enforcement
+        # for being the wrong shape of number, not for being wrong.
+        #
+        # It is kept, and kept visible, because it says the mapping is not a
+        # complete index of the model -- which matters to anything that might
+        # later treat it as one. REGISTERED reports it every run and fails on
+        # nothing, which is what its being a declared, understood asymmetry
+        # means.
         findings.append(_finding(
-            "G03-UNMAPPED", "every object is named by the mapping",
-            len(have - mapping_ids), len(have), THRESHOLDED))
+            "G03-SURPLUS", "objects the shards hold that the mapping does "
+                           "not name (surplus, not loss)",
+            len(have - mapping_ids), len(have), REGISTERED))
 
     # -- 2. object wrapper and entry --------------------------------------
     wrapper_keys: dict = {}
@@ -262,6 +304,7 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
 
     multi_data = 0
     multi_table = 0
+    table_titles = 0
     nonstring_name = 0
     colliding_doc_titles = 0
     empty_after_clean = 0
@@ -299,6 +342,8 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                 _bump(category_keys, k)
             if ctype == "table":
                 tables += 1
+                if isinstance(cat.get("title"), str) and cat["title"].strip():
+                    table_titles += 1
                 content = L._d(cat.get("content"))
                 for _group, fields in content.items():
                     if not isinstance(fields, dict):
@@ -356,6 +401,20 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
             if k not in HANDLED_CATEGORY_TYPES), n_objects, THRESHOLDED,
         ", ".join(sorted(str(k) for k in
                          set(category_types) - HANDLED_CATEGORY_TYPES))))
+    # A key can be declared handled and still be dropped, when it is consumed
+    # on one category type and not another. `title` is read on documentation
+    # entries and discarded on table entries, so the coarse key-level check
+    # above sees it as handled on all 71,844. Run 33464689986 exposed the same
+    # defect class in the insiteViews declaration, where a missing `id` made a
+    # 100% finding out of nothing. A declaration must be as fine-grained as
+    # the parser it describes.
+    findings.append(_finding(
+        "G15-TABLE-TITLE", "titles on table categories, which nothing reads",
+        table_titles, sum(n for k, n in category_types.items()
+                          if k == "table") or n_objects, REGISTERED,
+        "declared in EXCLUSIONS as X-TABLE-TITLE. REGISTERED, so it reports "
+        "every run and enters no at-risk aggregate: a declared exclusion "
+        "counted as loss is exactly what made the v1 aggregate 101.57%"))
     findings.append(_finding(
         "G13-CATEGORY-KEY", "categories[] entry keys are all handled",
         sum(n for k, n in category_keys.items()
@@ -467,32 +526,69 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         findings.append(_finding(
             "G60-VIEWDATA", "per-view data files were sampled", None, None,
             FAIL_ALWAYS, "no view sampled"))
+        inv["view_data_variables"] = NOT_MEASURED
         inv["view_data_keys"] = NOT_MEASURED
-        inv["viewpoints_declared"] = NOT_MEASURED
+        inv["viewpoints"] = NOT_MEASURED
+        inv["vp_legends"] = NOT_MEASURED
     else:
+        variables: dict = {}
         vkeys: dict = {}
-        viewpoints = 0
-        legends = 0
+        # THREE states, never two. A key that does not appear in the file at
+        # all cannot be reported as "zero declared" -- that conflates absence
+        # of the field with absence of content, and this project has already
+        # recorded a viewpoint count of zero produced entirely by requests
+        # that failed. `present_empty` and `absent` must stay distinguishable.
+        probe = {k: {"present_nonempty": 0, "present_empty": 0, "absent": 0}
+                 for k in ("viewpointsData", "vp_legends", "objectReferences",
+                           "typeIconPath")}
         for _vid, payload in view_data.items():
-            for k in _keys_of(payload):
-                _bump(vkeys, k)
-            if L._l(payload.get("viewpointsData")) or \
-                    L._d(payload.get("viewpointsData")):
-                viewpoints += 1
-            if L._l(payload.get("vp_legends")) or \
-                    L._d(payload.get("vp_legends")):
-                legends += 1
+            for var, value in payload.items():
+                _bump(variables, var)
+                for k in _keys_of(value):
+                    _bump(vkeys, k)
+            # A field may sit at the top level of any variable in the file.
+            for field, counter in probe.items():
+                found = [value.get(field) for value in payload.values()
+                         if isinstance(value, dict) and field in value]
+                if field in payload:
+                    found.append(payload[field])
+                if not found:
+                    counter["absent"] += 1
+                elif any(v not in (None, "", [], {}) for v in found):
+                    counter["present_nonempty"] += 1
+                else:
+                    counter["present_empty"] += 1
+
+        inv["view_data_variables"] = variables
         inv["view_data_keys"] = vkeys
-        inv["viewpoints_declared"] = viewpoints
-        inv["vp_legends_declared"] = legends
-        # Nothing in the bulk path reads this file at all, so EVERY key in it
-        # is unconsumed. The finding is the content behind those keys, and the
-        # sample size is the denominator -- this is a sample, and says so.
+        inv["view_data_fields"] = probe
+        inv["view_data_sample"] = len(view_data)
+
+        # Nothing on the bulk path reads this file, so anything it carries is
+        # unconsumed. Reported over the SAMPLE SIZE as its denominator, and
+        # labelled a sample: two views were once generalised to 608 in this
+        # project and were wrong by a factor of 40.
         findings.append(_finding(
-            "G61-VIEWDATA-UNREAD", "sampled views whose data file carries "
-                                   "viewpoints or legends nothing reads",
-            max(viewpoints, legends), len(view_data), THRESHOLDED,
-            "sampled, not a population: " + ", ".join(sorted(vkeys))))
+            "G61-VIEWDATA-UNREAD",
+            "sampled views whose data file carries content nothing reads",
+            max(c["present_nonempty"] for c in probe.values()),
+            len(view_data), THRESHOLDED,
+            "SAMPLE, not a population. variables: "
+            + ", ".join(sorted(variables)), sampled=True))
+
+        # An absent field is NOT a measurement of its content. Raised as its
+        # own finding so a run cannot quietly answer "are there viewpoints?"
+        # with a number derived from a field it never saw.
+        never_seen = sorted(f for f, c in probe.items()
+                            if c["absent"] == len(view_data))
+        if never_seen:
+            findings.append(_finding(
+                "G62-VIEWDATA-ABSENT",
+                "documented per-view fields not present in any sampled file",
+                None, len(view_data), FAIL_ALWAYS,
+                ", ".join(never_seen) + " — NOT MEASURED: absent from the "
+                "sample is not absent from the landscape, and the sample is "
+                f"{len(view_data)} of {len(landscape.insite_views)} views"))
 
     return {"gate_version": GATE_VERSION, "inventory": inv,
             "findings": findings,
@@ -543,7 +639,10 @@ def evaluate(observation: dict, max_share: float = 0.5,
             failed.append(entry)
         else:
             under.append(entry)
-            total_share += share
+            # Sample-denominator findings are carried but never summed into
+            # the population aggregate.
+            if not f.get("sampled"):
+                total_share += share
 
     aggregate_breached = (total_share > max_total_share and not observe_only)
     ok = not failed and not unmeasured and not aggregate_breached

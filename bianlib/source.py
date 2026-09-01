@@ -190,11 +190,32 @@ class BianSource(BaseSource):
         return out
 
     #: How many per-view data files the gate samples. `data/view_<id>_data.js`
-    #: is read by nothing on the bulk path, so every key in it is unconsumed
-    #: and a handful of pages settles what is behind them. A SAMPLE, and the
-    #: gate labels it as one -- generalising two views to 608 was wrong by a
-    #: factor of 40 in this project once already.
-    GATE_VIEW_SAMPLE = 5
+    #: is read by nothing on the bulk path, so every key in it is unconsumed.
+    #:
+    #: SPREAD ACROSS VIEW TYPES, not the first N by id. Run 33464689986 took
+    #: the first five and found two keys; a file's contents may well depend on
+    #: what kind of diagram it is, and five neighbouring ids are five samples
+    #: of one thing. Still a SAMPLE, and the gate labels every finding from it
+    #: as one -- two views were once generalised to 608 here and were wrong by
+    #: a factor of 40.
+    GATE_VIEW_SAMPLE = 12
+
+    def _gate_view_ids(self, model) -> list:
+        """Up to GATE_VIEW_SAMPLE view ids, spread across diagram categories."""
+        by_category: dict = {}
+        for vid in sorted(model.insite_views, key=str):
+            category = model.categories.get(str(vid), "(not an object)")
+            by_category.setdefault(category, []).append(str(vid))
+        picked: list = []
+        while len(picked) < self.GATE_VIEW_SAMPLE and by_category:
+            for category in sorted(by_category):
+                if len(picked) >= self.GATE_VIEW_SAMPLE:
+                    break
+                remaining = by_category[category]
+                picked.append(remaining.pop(0))
+                if not remaining:
+                    del by_category[category]
+        return picked
 
     def _run_gate(self, model, options: dict) -> dict:
         """Observe the source against the parser's declaration, then evaluate.
@@ -226,7 +247,7 @@ class BianSource(BaseSource):
                 print(f"    gate: config_data.js {type(e).__name__}",
                       flush=True)
 
-            for vid in sorted(model.insite_views, key=str)[:self.GATE_VIEW_SAMPLE]:
+            for vid in self._gate_view_ids(model):
                 url = L.data_url(self.base, f"view_{vid}_data.js")
                 try:
                     resp = fetcher.get(url, conditional=False)
@@ -234,8 +255,18 @@ class BianSource(BaseSource):
                         print(f"    gate: view {vid} data HTTP {resp.status}",
                               flush=True)
                         continue
-                    payload = L.parse_js_assignment(resp.text)
-                    if isinstance(payload, dict):
+                    # EVERY var in the file, not the first.
+                    #
+                    # This used parse_js_assignment, which returns one value,
+                    # and these files declare several. Run 33464689986
+                    # inventoried `id` and `isExpandedObject` and reported zero
+                    # viewpoints -- not because there are none, but because
+                    # only the first variable was ever looked at. That is a
+                    # NOT MEASURED wearing a zero, and it is the same shape as
+                    # reading one shard of forty-seven: the exact fault this
+                    # gate exists to catch, reproduced inside the gate.
+                    payload = L.parse_js_assignments(resp.text)
+                    if isinstance(payload, dict) and payload:
                         view_data[str(vid)] = payload
                 except Exception as e:                      # noqa: BLE001
                     print(f"    gate: view {vid} data {type(e).__name__} "
