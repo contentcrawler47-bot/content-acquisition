@@ -44,7 +44,11 @@ THREE CLASSES OF FINDING, AND ONLY ONE IS THRESHOLDABLE
 `THRESHOLDED`   Undeclared shapes and the non-key losses. Failing above the
                 threshold, recorded below it.
 `REGISTERED`    Declared in EXCLUSIONS and within its bound. Reported, never
-                failing. That is what declaring it meant.
+                failing FOR EXISTING -- that is what declaring it meant -- but
+                failing if it grows past the bound that was decided. A
+                registered finding with no bound can grow without limit and
+                never fail anything, which is what `bound` was for and what
+                nothing checked until changeset 064.
 
 SUB-THRESHOLD FINDINGS ARE CARRIED, NOT PRINTED. They go into the extract's
 `status.gate`, so they travel with the artifact, survive the run log, and diff
@@ -67,7 +71,7 @@ from core.render import ALNUM_RE, SEPARATING_TAGS, clean_html_stranded
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "11"
+GATE_VERSION = "12"
 
 #: How many evidence samples a finding carries in the extract. Bounded: the
 #: point is enough to judge a finding by, not a second copy of the corpus.
@@ -239,6 +243,16 @@ EXCLUSIONS = [
             "construction and would be a permanently red finding otherwise, "
             "but a version that starts filling viewpointsData still shows.",
      "bound": None},
+    {"code": "X-EMPTY-MARKUP",
+     "what": "documentation sections that clean to nothing",
+     "where": "landscape._documentation drops them (`if text:`)",
+     "why": "CHARACTERISED on run 33488890577, having been a bare count of 10 "
+            "on every previous run. All ten are nested <span> and <p> wrappers "
+            "containing only &nbsp; -- the tag inventory across all of them is "
+            "p, span and one b, with no img, table, li or a. So there is no "
+            "content behind them to lose; they are formatting shells left in "
+            "the source. Seven are on published objects. Reported as G23.",
+     "bound": 10},
     {"code": "X-OBJECT-PAGE", "what": "object_16.html",
      "where": "never fetched",
      "why": "JS-rendered shell, returns nothing. See references/dead-ends.md.",
@@ -256,7 +270,7 @@ NOT_MEASURED = "NOT MEASURED"
 
 
 def _finding(code, what, affected, denominator, cls, detail="",
-             sampled=False):
+             sampled=False, bound=None):
     """One finding, always with its denominator.
 
     `affected` may be None, which means NOT MEASURED -- the observation could
@@ -272,7 +286,7 @@ def _finding(code, what, affected, denominator, cls, detail="",
     """
     return {"code": code, "what": what, "affected": affected,
             "denominator": denominator, "class": cls, "detail": detail,
-            "sampled": bool(sampled)}
+            "sampled": bool(sampled), "bound": bound}
 
 
 def _keys_of(value) -> set:
@@ -364,7 +378,11 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         findings.append(_finding(
             "G03-SURPLUS", "objects the shards hold that the mapping does "
                            "not name (surplus, not loss)",
-            len(have - mapping_ids), len(have), REGISTERED))
+            len(have - mapping_ids), len(have), REGISTERED,
+            "bound is the measured value, not a margin around it: v14 is a "
+            "published version and this has read 1,359 on every run, so a "
+            "change means the source changed and the decision is due again",
+            bound=1359))
 
     # -- 2. object wrapper and entry --------------------------------------
     wrapper_keys: dict = {}
@@ -543,7 +561,8 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                           if k == "table") or n_objects, REGISTERED,
         "declared in EXCLUSIONS as X-TABLE-TITLE. REGISTERED, so it reports "
         "every run and enters no at-risk aggregate: a declared exclusion "
-        "counted as loss is exactly what made the v1 aggregate 101.57%"))
+        "counted as loss is exactly what made the v1 aggregate 101.57%",
+        bound=42861))
     findings.append(_finding(
         "G13-CATEGORY-KEY", "categories[] entry keys are all handled",
         sum(n for k, n in category_keys.items()
@@ -568,8 +587,10 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         colliding_doc_titles, n_objects, THRESHOLDED))
     findings.append(_finding(
         "G23-DOC-EMPTY", "documentation values that clean to nothing",
-        empty_after_clean, doc_values, THRESHOLDED,
-        f"{empty_after_clean_published} of them on published objects"))
+        empty_after_clean, doc_values, REGISTERED,
+        f"{empty_after_clean_published} of them on published objects. "
+        "Declared as X-EMPTY-MARKUP",
+        bound=10))
     inv["documentation_published"] = doc_values_published
     inv["clean_empty_samples"] = empty_samples
     inv["clean_stranded_samples"] = stranded_samples
@@ -969,7 +990,9 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
             sum(v["missing"] for v in refs.values()),
             sum(v["checked"] for v in refs.values()) or 1, REGISTERED,
             "SAMPLE. A reference is not a membership claim; reported so the "
-            "relation stays visible until it is identified",
+            "relation stays visible until it is identified. UNBOUNDED: an "
+            "absolute bound on a sample-dependent count would fail when the "
+            "sample size changes rather than when the content does",
             sampled=True))
 
         # Nothing on the bulk path reads this file, so anything it carries is
@@ -985,7 +1008,9 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
             "every view, so this reads 12 of 12 on every run and always will; "
             "left thresholded it is a finding that can only ever be red, "
             "which is how a check stops being read. It still reports, so a "
-            "landscape version that starts filling viewpointsData shows up.",
+            "landscape version that starts filling viewpointsData shows up. "
+            "UNBOUNDED for the same reason as G65: the count is a property of "
+            "the sample size, not of the content.",
             sampled=True))
 
         # An absent field is NOT a measurement of its content. Raised as its
@@ -1041,7 +1066,26 @@ def evaluate(observation: dict, max_share: float = 0.5,
         if affected == 0:
             continue
         if cls == REGISTERED:
-            registered.append(entry)
+            # A REGISTERED finding never fails for existing -- that is what
+            # registering it meant -- but it does fail for GROWING past the
+            # number that was decided.
+            #
+            # `bound` was declared on every exclusion from the start and
+            # compared nowhere, including in the docstring above, which said
+            # "within its bound" while nothing checked it. That is survivable
+            # while everything is observe-only and becomes a hole the size of
+            # the whole registered population the moment the gate enforces:
+            # 44,242 values across four findings that could grow without
+            # limit and never fail anything.
+            limit = f.get("bound")
+            if limit is not None and affected > limit and not observe_only:
+                failed.append(dict(entry, detail=(
+                    f"{entry.get('detail','')} -- REGISTERED at {limit}, "
+                    f"now {affected}. A declared exclusion has grown past "
+                    f"what was decided; re-decide it rather than raising the "
+                    f"bound to make this pass").strip(" -")))
+            else:
+                registered.append(entry)
             continue
         if cls == FAIL_ALWAYS:
             failed.append(entry)

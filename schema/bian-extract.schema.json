@@ -543,6 +543,7 @@
    "description": "One gate finding, always with its denominator. `affected` null means NOT MEASURED -- the observation could not be made, which is never the same as zero.",
    "required": [
     "affected",
+    "bound",
     "class",
     "code",
     "denominator",
@@ -590,6 +591,14 @@
     "sampled": {
      "type": "boolean",
      "description": "True when the denominator is a sample rather than the population. Such a finding may fail on its own but is excluded from the at-risk aggregate: a share over 12 sampled views and a share over 128,270 objects cannot be added together."
+    },
+    "bound": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0,
+     "description": "The largest affected count that is still the decision rather than a change in the source. A REGISTERED finding above its bound FAILS: registering something is a decision about a quantity, so the quantity binds. Null means unbounded, which is correct only for a sample-dependent count, where an absolute bound would fail on a change of sample size rather than of content."
     }
    }
   },

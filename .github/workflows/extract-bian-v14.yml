@@ -43,11 +43,14 @@ on:
         default: true
       gate_observe_only:
         description: >-
-          Record source-gate findings without failing on them. The FIRST run
-          must use this: thresholds cannot be set before the population they
-          measure exists. Fetch, parse and schema findings still fail.
+          Record source-gate findings without failing on them, including
+          bound breaches. Fetch, parse and schema findings still fail either
+          way. Default is now FALSE: the thresholds were set from measurement
+          in changeset 064 and the gate enforces. Turn this on to measure a
+          new landscape version before deciding its numbers, not to get a red
+          run past.
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -70,13 +73,24 @@ env:
   # Source input gate. Stated here, like the canary and the floors, so a
   # reader of the run can see what was demanded of it.
   #
-  # PROVISIONAL. These have never been measured against the landscape -- the
-  # gate has not run -- and a threshold taken from a sample mis-fires at
-  # scale, so the first run is observe-only and these numbers are replaced by
-  # a decision taken from its output. Never widen one to turn a red run green.
-  GATE_MAX_SHARE: "0.5"
-  GATE_MAX_ABSOLUTE: "500"
-  GATE_MAX_TOTAL_SHARE: "2.0"
+  # SET FROM MEASUREMENT on run 33489429857 (full) and 33488890577
+  # (model-only), which agree. The whole measured population is now declared:
+  # G03 1,359, G15 42,861, G23 10, plus two sampled findings, each REGISTERED
+  # with a bound. So the thresholded population is empty, and anything landing
+  # in it is something undeclared that has appeared -- for which the honest
+  # bound is near zero rather than a margin sized to clear a known defect.
+  #
+  # These are deliberately tight. A source that changes shape SHOULD turn the
+  # build red; the alternative is a bound wide enough to hide the next fault.
+  # The counts have not moved across seven consecutive runs, so there is no
+  # variance here to accommodate.
+  #
+  # Never widen one to turn a red run green. If a measurement legitimately
+  # moves, that is a DECISION-LOG entry and a new number, not an edit to make
+  # CI pass.
+  GATE_MAX_SHARE: "0.05"
+  GATE_MAX_ABSOLUTE: "25"
+  GATE_MAX_TOTAL_SHARE: "0.1"
 
 jobs:
   extract:
