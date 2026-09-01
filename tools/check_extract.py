@@ -596,6 +596,74 @@ def check_integrity(doc: dict, result: Result, args) -> None:
             result.add(status, f"{label} above floor",
                        f"{value}, floor {floor}")
 
+    # The source input gate. Everything else in this file runs DOWNSTREAM of
+    # the extractor and so cannot see what the extractor filtered out; this is
+    # the one check that looks the other way. Reported here rather than
+    # recomputed: the gate observes the SOURCE, and by the time an extract
+    # exists the source is no longer in hand.
+    gate = (doc.get("status", {}) or {}).get("gate") or {}
+    if gate.get("ok") is None and gate.get("detail") == "not run":
+        result.add(FAIL if args.require_gate else WARN,
+                   "the source input gate ran",
+                   "not run — an extract with no gate result has NOT been "
+                   "checked against its source"
+                   + ("" if args.require_gate else
+                      " (pass --require-gate to enforce)"))
+    elif not gate:
+        result.add(FAIL if args.require_gate else WARN,
+                   "the source input gate ran",
+                   "no gate block; this extract predates the gate")
+    else:
+        for f in gate.get("not_measured", []):
+            result.add(FAIL, f"gate {f['code']}",
+                       f"NOT MEASURED — {f.get('detail') or f['what']}")
+        for f in gate.get("failed", []):
+            result.add(FAIL, f"gate {f['code']}",
+                       f"{f['affected']} of {f['denominator']} "
+                       f"({f.get('share', 0):.3f}%) — {f['what']}"
+                       + (f" [{f['detail']}]" if f.get("detail") else ""))
+        # Sub-threshold findings are carried, not hidden. Printed with their
+        # denominators so a figure copied out of this log arrives with one.
+        for f in sorted(gate.get("under_threshold", []),
+                        key=lambda x: -(x.get("share") or 0)):
+            result.add(PASS, f"gate {f['code']} (under threshold)",
+                       f"{f['affected']} of {f['denominator']} "
+                       f"({f.get('share', 0):.3f}%) — {f['what']}")
+        total = gate.get("under_threshold_total_share", 0)
+        cap = (gate.get("thresholds") or {}).get("max_total_share")
+        result.add(FAIL if gate.get("aggregate_breached") else PASS,
+                   "gate sub-threshold aggregate",
+                   f"{total}% across {len(gate.get('under_threshold', []))} "
+                   f"findings, cap {cap}%")
+        if gate.get("observe_only"):
+            result.add(WARN, "gate mode",
+                       "OBSERVE-ONLY — threshold findings did not fail this "
+                       "run. Set the thresholds from these numbers, then "
+                       "enforce.")
+
+    # G70: every key the extractor emits into `status` must be DECLARED in
+    # the schema. `status.additionalProperties` is true and stays true -- it
+    # is the one extension point that lets a new counter land without a schema
+    # bump -- but an undeclared counter is one that could stop being emitted
+    # without failing anything, which is how six of them survived for months.
+    # Checked here rather than in the gate library because it needs the schema
+    # file, and the gate is pure.
+    try:
+        from bianlib import gate as G
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        for f in G.schema_reachability(doc.get("status", {}) or {}, schema):
+            if f["affected"] is None:
+                result.add(FAIL, f"gate {f['code']}",
+                           f"NOT MEASURED — {f['detail']}")
+            else:
+                result.add(FAIL if f["affected"] else PASS,
+                           f"gate {f['code']}",
+                           f"{f['affected']} of {f['denominator']} status "
+                           f"keys undeclared"
+                           + (f" [{f['detail']}]" if f["detail"] else ""))
+    except Exception as e:                                  # noqa: BLE001
+        result.add(FAIL, "gate G70-SCHEMA", f"{type(e).__name__}: {e}")
+
     # Digest is reproducible from the content it describes.
     try:
         from bianlib import extract as E
@@ -646,6 +714,10 @@ def main(argv=None) -> int:
                     help="the extract directory, e.g. out/_extract/bian-v14")
     ap.add_argument("--require-schema", action="store_true",
                     help="fail if jsonschema is not installed")
+    ap.add_argument("--require-gate", action="store_true",
+                    help="fail if the extract carries no gate result. An "
+                         "extract that was never checked against its source "
+                         "must not read as one that passed")
     ap.add_argument("--canary-id", default="")
     ap.add_argument("--canary-name", default="")
     ap.add_argument("--min-objects", type=int, default=0)

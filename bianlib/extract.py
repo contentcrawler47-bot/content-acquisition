@@ -45,7 +45,7 @@ from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
 #: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.6.0"
+SCHEMA_VERSION = "1.7.0"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
@@ -164,7 +164,7 @@ def _merge_counts(dicts) -> dict:
 def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
           insite_models=None, models_url: str = "",
           models_tried: list | None = None, geometry: dict | None = None,
-          run: dict | None = None) -> dict:
+          run: dict | None = None, gate: dict | None = None) -> dict:
     """The extract document for a loaded landscape.
 
     Pure: takes a materialised model and returns a dict. No network, no disk,
@@ -369,6 +369,19 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
             "objects_with_properties": with_properties,
             "property_groups_skipped": property_groups_skipped,
             "unresolved_members": unresolved_members,
+            # The source input gate. Carried in the extract rather than left
+            # in the run log: a sub-threshold finding printed to a
+            # world-readable log nobody reads is the same silent drop the gate
+            # exists to remove, moved up one level. Here it travels with the
+            # artifact and diffs between runs.
+            #
+            # Passed in, like `geometry` and `run`, because observing the
+            # source needs requests and build() is pure. It sits under
+            # `status` and so is outside `content_digest` by construction --
+            # correct, because a gate finding is an observation about the run,
+            # not a change in what BIAN published.
+            "gate": dict(gate) if gate else {"ok": None,
+                                             "detail": "not run"},
         },
         "notations": [{"type": "Notation", "name": n, "object_count": c}
                       for n, c in sorted(notations.items())],

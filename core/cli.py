@@ -152,7 +152,13 @@ def cmd_extract(sources, args) -> int:
     outdir = reset_dir(EXTRACT_OUT / s.id)
     print(f"Extracting {s} -> {outdir}", flush=True)
     try:
-        s.build_extract(outdir, mode=args.mode, run=ci_run())
+        s.build_extract(outdir, mode=args.mode, run=ci_run(),
+                        gate_options={
+                            "max_share": args.gate_max_share,
+                            "max_absolute": args.gate_max_absolute,
+                            "max_total_share": args.gate_max_total_share,
+                            "observe_only": args.gate_observe_only,
+                        })
     except NotImplementedError as e:
         print(f"\n  {e}", file=sys.stderr)
         print("  Stage 1 is optional; this source has not adopted it.",
@@ -417,6 +423,22 @@ def main(argv=None) -> int:
     e.add_argument("--mode", choices=["model-only", "full"],
                    default="model-only",
                    help="model-only reads no view pages")
+    # Source input gate. The thresholds are passed in rather than fixed in the
+    # tool so a reader of the run can see what was demanded of it, exactly as
+    # the canary and the floors already are.
+    e.add_argument("--gate-max-share", type=float, default=0.5, metavar="PCT",
+                   help="fail a gate finding above this share of its "
+                        "denominator")
+    e.add_argument("--gate-max-absolute", type=int, default=500, metavar="N",
+                   help="fail a gate finding above this many affected values, "
+                        "whatever its share")
+    e.add_argument("--gate-max-total-share", type=float, default=2.0,
+                   metavar="PCT",
+                   help="fail when sub-threshold findings SUM above this")
+    e.add_argument("--gate-observe-only", action="store_true",
+                   help="record gate findings without failing on them. "
+                        "Fetch, parse and schema findings still fail: you "
+                        "cannot threshold your own denominator")
     rn = with_source(sub.add_parser(
         "render", help="STAGE 2: select from a stored extract (no network)"))
     rn.add_argument("--add-category", action="append", metavar="CATEGORY",

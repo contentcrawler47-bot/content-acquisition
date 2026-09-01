@@ -41,6 +41,13 @@ on:
         description: Fail if jsonschema is unavailable
         type: boolean
         default: true
+      gate_observe_only:
+        description: >-
+          Record source-gate findings without failing on them. The FIRST run
+          must use this: thresholds cannot be set before the population they
+          measure exists. Fetch, parse and schema findings still fail.
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -60,6 +67,16 @@ env:
   MIN_OBJECTS: "100000"
   MIN_VIEWS: "2000"
   MIN_SERVICE_DOMAINS: "340"
+  # Source input gate. Stated here, like the canary and the floors, so a
+  # reader of the run can see what was demanded of it.
+  #
+  # PROVISIONAL. These have never been measured against the landscape -- the
+  # gate has not run -- and a threshold taken from a sample mis-fires at
+  # scale, so the first run is observe-only and these numbers are replaced by
+  # a decision taken from its output. Never widen one to turn a red run green.
+  GATE_MAX_SHARE: "0.5"
+  GATE_MAX_ABSOLUTE: "500"
+  GATE_MAX_TOTAL_SHARE: "2.0"
 
 jobs:
   extract:
@@ -89,12 +106,18 @@ jobs:
           python3 -m pip install --require-hashes -r requirements-extract.txt
 
       - name: Build the extract
-        run: python3 run.py extract "$SOURCE_ID" --mode "${{ inputs.mode }}"
+        run: |
+          python3 run.py extract "$SOURCE_ID" --mode "${{ inputs.mode }}" \
+            --gate-max-share "$GATE_MAX_SHARE" \
+            --gate-max-absolute "$GATE_MAX_ABSOLUTE" \
+            --gate-max-total-share "$GATE_MAX_TOTAL_SHARE" \
+            ${{ inputs.gate_observe_only && '--gate-observe-only' || '' }}
 
       - name: Check the extract
         run: |
           python3 tools/check_extract.py "out/_extract/$SOURCE_ID" \
             ${{ inputs.require_schema && '--require-schema' || '' }} \
+            --require-gate \
             --canary-id "$CANARY_ID" \
             --canary-name "$CANARY_NAME" \
             --min-objects "$MIN_OBJECTS" \

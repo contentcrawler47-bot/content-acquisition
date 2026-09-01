@@ -189,8 +189,75 @@ class BianSource(BaseSource):
               f"{failed} failed", flush=True)
         return out
 
+    #: How many per-view data files the gate samples. `data/view_<id>_data.js`
+    #: is read by nothing on the bulk path, so every key in it is unconsumed
+    #: and a handful of pages settles what is behind them. A SAMPLE, and the
+    #: gate labels it as one -- generalising two views to 608 was wrong by a
+    #: factor of 40 in this project once already.
+    GATE_VIEW_SAMPLE = 5
+
+    def _run_gate(self, model, options: dict) -> dict:
+        """Observe the source against the parser's declaration, then evaluate.
+
+        Two artefacts are fetched here and nowhere else in the pipeline:
+        `config_data.js`, which is probed for existence and has never been
+        parsed, and a sample of `data/view_<id>_data.js`, which nothing on the
+        bulk path reads at all.
+
+        A failure to fetch either produces NOT MEASURED, never zero. The one
+        recorded measurement of ArchiMate viewpoints in this project was a zero
+        produced by thirty fetches that had all failed on a path later proved
+        wrong, and it survived the correction of that path.
+        """
+        from bianlib import gate as G
+
+        fetcher = Fetcher(self.base)
+        config, view_data = None, {}
+        try:
+            try:
+                resp = fetcher.get(L.data_url(self.base, "config_data.js"),
+                                   conditional=False)
+                if resp.status == 200 and resp.text.strip():
+                    config = L.parse_js_assignments(resp.text)
+                else:
+                    print(f"    gate: config_data.js HTTP {resp.status}",
+                          flush=True)
+            except Exception as e:                          # noqa: BLE001
+                print(f"    gate: config_data.js {type(e).__name__}",
+                      flush=True)
+
+            for vid in sorted(model.insite_views, key=str)[:self.GATE_VIEW_SAMPLE]:
+                url = L.data_url(self.base, f"view_{vid}_data.js")
+                try:
+                    resp = fetcher.get(url, conditional=False)
+                    if resp.status != 200 or not resp.text.strip():
+                        print(f"    gate: view {vid} data HTTP {resp.status}",
+                              flush=True)
+                        continue
+                    payload = L.parse_js_assignment(resp.text)
+                    if isinstance(payload, dict):
+                        view_data[str(vid)] = payload
+                except Exception as e:                      # noqa: BLE001
+                    print(f"    gate: view {vid} data {type(e).__name__} "
+                          f"on {url}", flush=True)
+        finally:
+            fetcher.close()
+
+        observation = G.observe(model, config=config, view_data=view_data,
+                                shard_results=model.shard_results)
+        verdict = G.evaluate(
+            observation,
+            max_share=float(options.get("max_share", 0.5)),
+            max_absolute=int(options.get("max_absolute", 500)),
+            max_total_share=float(options.get("max_total_share", 2.0)),
+            observe_only=bool(options.get("observe_only", False)))
+        verdict["inventory"] = observation["inventory"]
+        verdict["exclusions"] = observation["exclusions"]
+        return verdict
+
     def build_extract(self, outdir: Path, mode: str = "model-only",
-                      run: dict | None = None) -> dict:
+                      run: dict | None = None,
+                      gate_options: dict | None = None) -> dict:
         """Load the landscape and write it as a JSON-LD extract.
 
         Loads exactly what `harvest()` loads, and then stores it rather than
@@ -217,9 +284,11 @@ class BianSource(BaseSource):
         if mode == "full":
             geometry = self._fetch_geometry(model, fetcher_factory=Fetcher)
 
+        gate = self._run_gate(model, gate_options or {})
+
         doc = E.build(model, self.id, mode=mode, insite_models=entries,
                       models_url=models_url, models_tried=tried,
-                      geometry=geometry, run=run)
+                      geometry=geometry, run=run, gate=gate)
         summary = E.write(doc, outdir)
 
         status = doc["status"]
@@ -258,6 +327,13 @@ class BianSource(BaseSource):
         if status["malformed_objects"]:
             print(f"  malformed objects skipped: "
                   f"{status['malformed_objects']}", flush=True)
+
+        # The gate is REPORTED here and ENFORCED in check_extract.py, which
+        # runs after the artifact is uploaded. A failed extract is the thing
+        # you most want to look at, and refusing to write it would throw away
+        # the evidence for the refusal.
+        from bianlib import gate as G
+        print("\n" + "\n".join(G.report(status["gate"])), flush=True)
         return summary
 
     # -- harvest ---------------------------------------------------------

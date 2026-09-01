@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v5 | repo: changeset 052 -->
+<!-- skill: bian-extraction v6 | repo: changeset 053 -->
 
 # BIAN Service Landscape extraction
 
@@ -228,6 +228,28 @@ Two landscape facts that will catch out any filter or report:
 
 Views that yield neither messages nor classes are skips with a reason, not
 failures.
+
+**Every check downstream of the parser is blind in one direction.** Referential
+integrity stays perfect when a whole shard is missing — every object still
+resolves, every category is still declared — and a filter cannot see the
+population it excludes. So a harvest also needs a check that looks the other
+way: observe what the source contains, compare it against a **declaration of
+what the parser handles**, and report what is present and unconsumed. Declare
+an allowlist of handled shapes, not a list of known junk, so a field that
+appears in a new landscape version fails a run rather than being quietly absent
+from the output.
+
+**A key inventory is not enough.** Some losses are not key-shaped: reading only
+`data[0]` drops the entries after it while the key itself looks consumed, and
+stripping tags without a separator corrupts text with every key intact. Record
+list cardinality and value shapes alongside key names, and give every finding
+the number of values behind it — a key on three objects and a key on ninety
+thousand are not the same problem.
+
+**Sub-threshold findings must be carried, not printed.** A finding below the
+failure threshold that goes only to a run log is the same silent drop, moved up
+one level. Put it in the output, where it travels with the artefact and diffs
+between runs.
 
 ## Etiquette and legal
 

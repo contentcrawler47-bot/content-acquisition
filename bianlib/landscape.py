@@ -373,6 +373,13 @@ class Landscape:
         self.categories: dict = {}
         self.shards: list[int] = []
         self.notes: list[str] = []
+        #: What the loader ASKED FOR against what it actually got. `shards`
+        #: alone is the intent, computed from the mapping before a single
+        #: request is made, so an extract carrying it can declare it read a
+        #: shard that 404'd. The gate needs the difference, and the notes list
+        #: never left the harvest path.
+        self.shard_results: dict = {"requested": [], "read": [],
+                                    "mapping_ids": []}
 
     # -- loading ------------------------------------------------------
 
@@ -387,6 +394,8 @@ class Landscape:
         except Exception:
             mapping = {}
         self.shards = shard_numbers(mapping)
+        self.shard_results["requested"] = list(self.shards)
+        self.shard_results["mapping_ids"] = [str(k) for k in mapping]
         print(f"  {len(self.shards)} shards to fetch: "
               f"{self.shards[0]}-{self.shards[-1]}", flush=True)
 
@@ -403,6 +412,7 @@ class Landscape:
                 self.notes.append(f"shard {n} unparseable ({type(e).__name__})")
                 continue
             before = len(self.objects)
+            self.shard_results["read"].append(n)
             for oid, obj in data.items():
                 self.objects.setdefault(oid, obj)
             print(f"  shard {n:<3} {len(resp.text) / 1024:>8.0f} KB  "
