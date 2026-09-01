@@ -132,8 +132,11 @@ about — and a tool built from it under-reported the wanted-object count while
 looking entirely self-consistent. A constant the pipeline defines is a
 measurement: name where it lives, never restate it.
 
-`Business function` and `Work package` are deliberately absent and would be
-added if ArchiMate views are ever rendered.
+Which categories are in and which are out **changes**, and each change is a
+decision taken on measured evidence. Naming them here would be recording a
+measurement — the mistake the paragraph above describes, made again two
+paragraphs later. Read the constant for what is in, and `DECISION-LOG.md` in
+the project context for why a category is in or out.
 
 **Normalise before matching, and union every match.** The service domain
 category is spelled both with and without a space, and a substring test finds

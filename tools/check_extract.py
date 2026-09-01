@@ -657,15 +657,17 @@ def main(argv=None) -> int:
                     help="known-unresolvable relation targets")
     ap.add_argument("--allow-missing-models", action="store_true",
                     help="downgrade a missing model index to a warning")
-    ap.add_argument("--expect-geometry-unboxed", type=int, default=18,
-                    help="blocks that legitimately have no box. Measured 18 "
-                         "on extract run 33432579145, which is LOWER than the "
-                         "29 of runs 6-9 despite fetching 54 more views: "
-                         "changeset 049 taught box_of to resolve symbol nodes "
-                         "and recovered 39 blocks. The remainder is expected "
-                         "to be mostly junction connectors, which are drawn "
-                         "without a box by design -- read the by-concept line "
-                         "rather than trusting that sentence")
+    ap.add_argument("--expect-geometry-unboxed", type=int, default=14,
+                    help="blocks that legitimately have no box. Measured 14 on "
+                         "extract run 33443477519, and the by-concept line on "
+                         "that run says exactly what they are: OrJunction 9, "
+                         "Junction 4, MotivationValue 1. The 13 junctions are "
+                         "connector nodes drawn without a box by design and "
+                         "are the same 13 changeset 035 moved out of the edge "
+                         "collection. The single MotivationValue is "
+                         "unexplained. This figure has moved four times for "
+                         "four different reasons -- read the by-concept line, "
+                         "never the total alone")
     ap.add_argument("--allow-unresolved-members", type=int, default=25,
                     help="memberships naming neither an object nor a view "
                          "(measured 15 of 127,588 on 29 August 2026)")
