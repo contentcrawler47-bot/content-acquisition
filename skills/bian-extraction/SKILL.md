@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v15 | repo: changeset 062 -->
+<!-- skill: bian-extraction v16 | repo: changeset 063 -->
 
 # BIAN Service Landscape extraction
 
@@ -360,6 +360,18 @@ times and only 382 of its sources are views; excluding the verb wholesale would
 have suppressed thousands of unrelated pairs. Exclude the specific case
 observed — an edge whose source IS the view being checked — not the general
 shape it belongs to.
+
+**Once an exclusion is validated, move its finding to registered.** A check on
+something deliberately excluded reads 100% by construction; leaving it in the
+failing population makes a permanently red number that everyone learns to
+ignore, and it drowns the aggregate meant to catch real ones. Keep it
+reporting, stop it counting.
+
+**A count is not a characterisation.** Ten documentation sections cleaning to
+nothing had been reported as a bare number on every run without anyone seeing
+one — and empty markup and a discarded image produce the identical count. Carry
+the tag inventory and a bounded rendering with any finding you intend to
+register, because you cannot set a bound on something you have not looked at.
 
 ## Etiquette and legal
 

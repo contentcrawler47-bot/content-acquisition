@@ -67,7 +67,7 @@ from core.render import ALNUM_RE, SEPARATING_TAGS, clean_html_stranded
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "10"
+GATE_VERSION = "11"
 
 #: How many evidence samples a finding carries in the extract. Bounded: the
 #: point is enough to judge a finding by, not a second copy of the corpus.
@@ -227,13 +227,17 @@ EXCLUSIONS = [
      "bound": None},
     {"code": "X-VIEW-DATA", "what": "data/view_<id>_data.js (all seven vars)",
      "where": "never read on the bulk path",
-     "why": "MEASURED on run 33468063747 across 12 of 2,285 views, stratified "
-            "by diagram category. viewpointsData and vp_legends present and "
-            "EMPTY in all twelve; objectReferences non-empty in eleven, in an "
-            "id space where 504 of 549 keys resolve to no object and no view "
-            "we hold. Kept out on the working belief that it is per-diagram "
-            "presentation data -- a BELIEF, not a validated exclusion, and "
-            "G63 is what would contradict it.",
+     "why": "VALIDATED across runs 33468063747 to 33487652152, on 12 of 2,285 "
+            "views stratified by diagram category. viewpointsData and "
+            "vp_legends present and EMPTY in all twelve. objectData names only "
+            "objects already recorded as members (G64: 0 of 7 missing, after "
+            "excluding the view's own diagram object and the object it "
+            "refines). objectReferences maps diagram element ids to object "
+            "ids and every one of its 530 values resolves (G63: 0 unresolved). "
+            "So the file is presentation data over content we already hold. "
+            "G61 reports it every run as REGISTERED -- it reads 12 of 12 by "
+            "construction and would be a permanently red finding otherwise, "
+            "but a version that starts filling viewpointsData still shows.",
      "bound": None},
     {"code": "X-OBJECT-PAGE", "what": "object_16.html",
      "where": "never fetched",
@@ -379,6 +383,7 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
     doc_values_published = 0
     boundary_tag_published = 0
     empty_after_clean_published = 0
+    empty_samples: list = []
     #: G27. Values where the cleaner leaves punctuation alone on a line at a
     #: boundary IT inserted. The cleaner reports its own residue now that the
     #: retired function is gone: comparing against a function nothing calls
@@ -466,6 +471,25 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                         empty_after_clean += 1
                         if published:
                             empty_after_clean_published += 1
+                        # WHAT IS IN THEM. Ten values across the corpus have
+                        # been reported as a bare count on every run since the
+                        # gate shipped, and nobody has looked at one. A section
+                        # that survives in the source and cleans to nothing is
+                        # either empty markup, which is a registerable
+                        # exclusion, or an image or table we discard, which is
+                        # content loss -- and the count alone cannot tell them
+                        # apart.
+                        #
+                        # The tag inventory and a bounded rendering, not the
+                        # whole value: enough to classify it, and the extract
+                        # is not a place to copy source markup into wholesale.
+                        if len(empty_samples) < GATE_CLEAN_SAMPLES:
+                            empty_samples.append({
+                                "object": str(oid), "category": category,
+                                "section": title, "published": published,
+                                "tags": sorted(tags),
+                                "length": len(value),
+                                "sample": value[:200]})
                     introduced = clean_html_stranded(value)
                     if introduced:
                         clean_stranded += 1
@@ -547,6 +571,7 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         empty_after_clean, doc_values, THRESHOLDED,
         f"{empty_after_clean_published} of them on published objects"))
     inv["documentation_published"] = doc_values_published
+    inv["clean_empty_samples"] = empty_samples
     inv["clean_stranded_samples"] = stranded_samples
 
     # G27 is FAIL-ALWAYS on the published population. A stranded delimiter is
@@ -955,9 +980,13 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
             "G61-VIEWDATA-UNREAD",
             "sampled views whose data file carries content nothing reads",
             max(c["present_nonempty"] for c in probe.values()),
-            len(view_data), THRESHOLDED,
-            "SAMPLE, not a population. variables: "
-            + ", ".join(sorted(variables)), sampled=True))
+            len(view_data), REGISTERED,
+            "SAMPLE. Declared as X-VIEW-DATA. objectData is non-empty in "
+            "every view, so this reads 12 of 12 on every run and always will; "
+            "left thresholded it is a finding that can only ever be red, "
+            "which is how a check stops being read. It still reports, so a "
+            "landscape version that starts filling viewpointsData shows up.",
+            sampled=True))
 
         # An absent field is NOT a measurement of its content. Raised as its
         # own finding so a run cannot quietly answer "are there viewpoints?"
