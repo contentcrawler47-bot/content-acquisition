@@ -635,11 +635,27 @@ def check_integrity(doc: dict, result: Result, args) -> None:
                    "gate sub-threshold aggregate",
                    f"{total}% across {len(gate.get('under_threshold', []))} "
                    f"findings, cap {cap}%")
+        # OBSERVE-ONLY IS A FAILURE UNLESS IT WAS ASKED FOR.
+        #
+        # This was a WARN, and run 33491926420 -- the first run after the gate
+        # was set to enforce -- came back green with `--gate-observe-only`
+        # still on the command line. Changing the workflow input's default to
+        # false only changes what the dispatch form PRE-FILLS; GitHub carries
+        # the previous dispatch's value forward, so the old setting won.
+        #
+        # A default is a starting value, not a constraint. So the run must now
+        # say out loud that it is not enforcing: observe-only fails unless
+        # --allow-observe-only is passed, which the workflow supplies only when
+        # the input was deliberately set. A gate that can be silently
+        # downgraded to a measurement is not a gate.
         if gate.get("observe_only"):
-            result.add(WARN, "gate mode",
-                       "OBSERVE-ONLY — threshold findings did not fail this "
-                       "run. Set the thresholds from these numbers, then "
-                       "enforce.")
+            result.add(PASS if args.allow_observe_only else FAIL, "gate mode",
+                       "OBSERVE-ONLY — threshold and bound findings did not "
+                       "fail this run"
+                       + ("; allowed explicitly" if args.allow_observe_only
+                          else ". The gate enforces by default: pass "
+                               "--allow-observe-only, or gate_observe_only in "
+                               "the workflow, if measuring is what you meant"))
 
     # G70: every key the extractor emits into `status` must be DECLARED in
     # the schema. `status.additionalProperties` is true and stays true -- it
@@ -714,6 +730,10 @@ def main(argv=None) -> int:
                     help="the extract directory, e.g. out/_extract/bian-v14")
     ap.add_argument("--require-schema", action="store_true",
                     help="fail if jsonschema is not installed")
+    ap.add_argument("--allow-observe-only", action="store_true",
+                    help="permit a run whose gate did not enforce. Without "
+                         "this, observe-only is a failure: a gate that can be "
+                         "silently downgraded to a measurement is not a gate")
     ap.add_argument("--require-gate", action="store_true",
                     help="fail if the extract carries no gate result. An "
                          "extract that was never checked against its source "

@@ -3,7 +3,7 @@ name: content-acquisition
 description: Operate the content-acquisition project — a GitHub Actions and Google Drive pipeline that harvests reference content from external sources, renders it to markdown and PlantUML, and publishes it privately for Claude to read. Use this skill whenever the user mentions content-acquisition, changesets, the harvest or publish workflows, adding a content source, repo digests or MANIFEST.sha256, or asks to change anything in that repo. Also use it when they mention BIAN together with harvesting, publishing or automation, or when a GitHub Actions log from this project is shared. Critically, changes to this repo must be delivered as verified changeset zips, never as loose files to paste — so consult this skill before proposing any modification to it.
 ---
 
-<!-- skill: content-acquisition v4 | repo: changeset 036 -->
+<!-- skill: content-acquisition v5 | repo: changeset 065 -->
 
 # content-acquisition
 
@@ -64,6 +64,7 @@ If the sandbox is unavailable, ask the user to run **Verify repo contents**.
 as the task requires: `PROJECT-DESIGN.md` (rationale), `DECISION-LOG.md`
 (rejected alternatives), `REFERENCE-DATA.md` (verified counts, thresholds,
 digest history), `METHOD.md` (working method for a new source),
+`GATE-DESIGN.md` (why the source input gate exists and how it is built),
 `BIAN-EXTRACTION-REFERENCE.md`.
 
 Never assert a digest, an expiry, or what is outstanding from memory — **and do
@@ -212,6 +213,44 @@ documents in this repo — it is public and they are deliberately not.
   that the consuming code assumed the wrong data shape and had never run. A
   reimplementation would have reproduced the assumption, because the assumption
   belonged to whoever was writing.
+- **Every check downstream of the parser is blind in one direction.**
+  Referential integrity stays perfect when a whole shard is missing. A harvest
+  needs one check that looks the other way: observe the source, compare it
+  against a declaration of what the parser handles, and report what is present
+  and unconsumed. Declare an allowlist of handled shapes, not a list of known
+  junk, so a field that appears in a new version fails a run rather than being
+  quietly absent from the output.
+- **A wrong declaration is worse than a missing check.** Forget a key the
+  parser does read and the check raises a 100% finding out of nothing, which
+  then swamps the aggregate meant to catch many small real ones. Treat a 100%
+  finding as a suspected declaration fault before believing it, and derive the
+  declaration by importing from the parser rather than keeping a copy beside
+  it.
+- **Never sum shares across denominators.** A finding over a twelve-item sample
+  and one over 128,270 objects cannot be added. Mark sampled findings and keep
+  them out of any population aggregate.
+- **Surplus is not loss.** Holding more than an index declares is an asymmetry
+  worth reporting every run and failing on never.
+- **A bound nothing compares is a comment.** Declared exclusions carried a
+  `bound` field for a dozen changesets and nothing read it, including the
+  docstring that said findings were "within their bound". Harmless while
+  everything is observe-only; a hole the size of the whole declared population
+  the moment the check enforces.
+- **A default is a starting value, not a constraint.** Changing a workflow
+  input's default to `false` changed only what the dispatch form pre-filled;
+  the previous dispatch's value was carried forward and the first enforcing run
+  quietly did not enforce. If a setting can silently downgrade a gate, the run
+  must fail unless that setting was asked for explicitly.
+- **Measure a change against the source before adopting it, and keep the old
+  implementation only until it has confirmed the switch.** Output that has
+  already been through a transform cannot be compared with anything afterwards.
+  Then delete the old implementation together with the check comparing against
+  it: a comparison against a function nothing calls measures a hypothetical
+  while still reading like evidence.
+- **A count is not a characterisation.** Ten values reported as a bare number
+  for a dozen runs turned out to be empty markup — but a discarded image would
+  have produced the identical count. Carry evidence with any finding you intend
+  to set a bound on.
 - **A second copy is a second thing to keep right**, and the one nobody reads
   is the one that rots. Learned three times here: duplicated changeset history
   that went three changesets stale, a duplicated extraction reference that
@@ -247,6 +286,18 @@ Within a chunked landscape run, read which *job* failed — `plan` made no page
 requests at all, `chunk N` localises it to one slice, `assemble` means nothing
 was published. Within extraction, validation is staged and stops at the first
 failure.
+
+**Check what the run actually executed, not what the repo says it should.**
+A log carries the expanded command line and the resolved `env` block; a
+workflow input evaluated from a stale dispatch value, or a checkout of an older
+commit, are both visible there and neither is visible in the repo. Two runs in
+this project were read as results before anyone noticed one had run five
+changesets behind and another had not enforced.
+
+**A stale checkout can verify clean.** A cached tarball of `main` matched its
+own manifest perfectly while being five changesets old — the digest proves
+internal consistency, not currency. Cache-bust the fetch, and confirm a marker
+that moves with the change: a version constant, a new symbol, a schema version.
 
 **Ask for the failing job or stage specifically**, not the whole log, and ask
 for it as an **uploaded file** — pasting inline has repeatedly arrived empty in

@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v17 | repo: changeset 064 -->
+<!-- skill: bian-extraction v18 | repo: changeset 065 -->
 
 # BIAN Service Landscape extraction
 
@@ -228,167 +228,76 @@ Two landscape facts that will catch out any filter or report:
 
 Views that yield neither messages nor classes are skips with a reason, not
 failures.
+## The source input gate
 
-**Every check downstream of the parser is blind in one direction.** Referential
-integrity stays perfect when a whole shard is missing — every object still
-resolves, every category is still declared — and a filter cannot see the
-population it excludes. So a harvest also needs a check that looks the other
-way: observe what the source contains, compare it against a **declaration of
-what the parser handles**, and report what is present and unconsumed. Declare
-an allowlist of handled shapes, not a list of known junk, so a field that
-appears in a new landscape version fails a run rather than being quietly absent
-from the output.
+`bianlib/gate.py` observes what BIAN publishes against a declaration of what
+the parser handles, and reports what is present and unconsumed. It runs inside
+every extract, in either mode, and its result rides in the extract at
+`status.gate`. The **design rationale, principles and general lessons are in
+`GATE-DESIGN.md` on Drive and in the `content-acquisition` skill** — they are
+not BIAN-specific and are not repeated here.
 
-**A key inventory is not enough.** Some losses are not key-shaped: reading only
-`data[0]` drops the entries after it while the key itself looks consumed, and
-stripping tags without a separator corrupts text with every key intact. Record
-list cardinality and value shapes alongside key names, and give every finding
-the number of values behind it — a key on three objects and a key on ninety
-thousand are not the same problem.
+What the gate settled about v14, each measured rather than argued:
 
-**Sub-threshold findings must be carried, not printed.** A finding below the
-failure threshold that goes only to a run log is the same silent drop, moved up
-one level. Put it in the output, where it travels with the artefact and diffs
-between runs.
+- **One language.** `config_data.js` declares one, and all 128,270 objects carry
+  exactly one `data` entry. Reading only `data[0]` drops nothing *today*; a
+  second published language would be silent loss, which is why the check stays.
+- **One table category per object**, so `_properties` returning on the first is
+  not a tail-drop. 42,861 table categories across the corpus.
+- **Every table category carries a `title` that nothing reads** — a real and
+  universal drop, kept because the titles have not been shown to add anything
+  to the group names.
+- **No third `categories[]` type, no undeclared wrapper or entry key, no
+  unhandled property discriminator, no non-string relation target, no empty
+  relation verb.** All measured zero.
+- **All 47 shards read, and every id in `objectDataMapping` has an object.**
+  1,359 objects exist that the mapping does not name — surplus, not loss.
+- **`all_objects_on_views.js` is complete.** Every object a view's own
+  `objectData` claims is recorded as a member of it.
+- **Ten documentation values clean to nothing**, and all ten are `<span>`/`<p>`
+  wrappers containing only `&nbsp;` — tags `p`, `span` and one `b` across all
+  ten, no `img`, `table`, `li` or `a`. Empty markup, not discarded content.
 
-**A gate is only as good as its declaration, and a wrong declaration is worse
-than a missing check.** Declare a key the parser reads and forget one it also
-reads, and the gate raises a 100% finding out of nothing — which then swamps
-the aggregate that exists to catch many small real ones. Declare a key as
-handled when it is consumed on one variant and dropped on another, and a real
-drop hides behind a green check. Make the declaration as fine-grained as the
-parser, and treat a 100% finding as a suspected declaration fault before
-believing it.
+## The per-view data file, and its two traps
 
-**Never sum shares across denominators.** A finding over a twelve-view sample
-and a finding over 128,270 objects cannot be added; carry a sampled finding
-separately and keep it out of any population aggregate.
+`data/view_<id>_data.js` declares **seven** variables — `objectData`,
+`objectReferences`, `objectRelations`, `viewData`, `viewReferences`,
+`viewpointsData`, `vp_legends` — so parse **every** assignment. Reading the
+first one reported an inventory of two keys and a viewpoint count of zero that
+was really NOT MEASURED.
 
-**Surplus is not loss, and must not be counted as it.** Holding more than an
-index declares is an asymmetry worth reporting every run and failing on never.
+**`objectReferences` maps diagram element id to object id.** The keys are a
+per-diagram presentation namespace: 504 of 530 resolve to nothing, and every
+one of the 530 *values* resolves to an object we hold. Checking the keys
+produced a permanently red finding about the wrong side of a mapping.
 
-**A landscape data file may declare several `var`s.** Read every assignment,
-not the first. Reading one where the file holds many is the same fault as
-reading one shard of forty-seven, and it produces an inventory that looks
-complete. Where a documented field is simply absent from what was sampled, that
-is NOT MEASURED — never a zero, and never evidence the field does not exist.
+`viewpointsData` and `vp_legends` are present and **empty** in every sampled
+view. That is the measured answer to the ArchiMate viewpoint question — the
+earlier flat claim of zero came from thirty fetches that had all failed on a
+wrong path.
 
-**Derive a probe list from the artefact, not from the documentation.** A probe
-built by reading an orientation map tests the map. Demanding a field of the
-wrong file produces a NOT MEASURED that is entirely the probe's fault, and it
-reads exactly like a real one.
+## Two containment traps in the model
 
-**Record which items a sample drew.** A finding over an unidentifiable sample
-cannot be re-checked by anyone, including the next run.
+**A view's id is its own diagram object's id**, so the object appears in its
+own view's file. It is the container, not a member.
 
-**Reconcile foreign identifiers against what you hold.** A file can be full of
-ids that resolve to no object and no view you have; that is either presentation
-data or an entire namespace you have not captured, and only a check tells you
-which. Establishing it by hand once does not survive the next version.
+**A view `is refinement of` the object it depicts** — its subject, also not a
+member, and properly a member of some other view. That verb appears 6,860
+times and only 382 of its sources are views, so any rule about it must be
+narrowed to edges whose source is the view in question.
 
-**Ship a replacement cleaner beside the old one and measure the delta before
-adopting it.** The extract stores text that has ALREADY been through the
-cleaner, so once the cleaner changes there is nothing left to compare against
-— the evidence for the change has to be gathered while the old behaviour is
-still running. Run both over the source, count how many values actually move,
-split that by the stage 2 allowlist, and carry a bounded set of before/after
-pairs in the output. Adopting a text change on the strength of a constructed
-example tests the example.
+## Documentation HTML
 
-**Confine a repair to the fault it repairs.** A rule that fixes text broken by
-tag-stripping will also reach text that was never broken — folding stray
-punctuation into its neighbour repaired the intended values and quietly merged
-a row of dots used as a visual separator onto the line above it. Mark the
-boundaries the repair itself introduces and act only on those, so values
-without the fault are provably untouched rather than argued to be.
+`clean_html` separates paragraph, list, table, heading and definition
+boundaries; every other tag is deleted without a separator. Before changeset
+059 the block tags were deleted too, fusing list items and table cells —
+`<li>A</li><li>B</li>` became `AB` — across 133 values, 36 of them published.
 
-**Make the regression detector fail, on purpose, before trusting its zero.**
-Disable the fix and confirm the check fires; a detector that has only ever
-returned zero has not been shown to detect anything.
-
-**A regression detector must measure the delta, not the symptom.** Counting
-every occurrence of the bad pattern in the output flags cases the change never
-touched: BIAN's own markup puts a row of dots and a lone full stop on their own
-lines, so a check for bare-punctuation lines fired on values where before and
-after were byte-identical — including the very value the fix was built to
-protect. Compare the two outputs and count only what the change introduced.
-Proving the detector fires is necessary and not sufficient; it must also be
-shown not to fire on what it should ignore.
-
-**Retire the old implementation, do not delete it — then delete it.** Keep it
-just long enough for the delta check to confirm the switch on a real run, and
-take it out together with that check. A comparison against a function nothing
-uses measures a hypothetical, and still reads like evidence.
-
-**When a fix widens what the code handles, widen the declaration with it — by
-importing, not by editing a copy.** A check that goes on counting values at
-risk from tags the cleaner now separates is a false alarm, and a false alarm is
-how a check stops being read. Derive the declaration from the sets the parser
-itself uses.
-
-**Retire a check once it has answered its question.** A measurement built to
-decide one change stops being evidence the moment the change lands; keeping it
-leaves something that still reads like a check while testing a hypothetical.
-Remove it together with whatever it was comparing against, and give any check
-that outlives it a baseline it can compute on its own.
-
-**Aggregating across a sample destroys the attribution you need.** Counting 549
-identifiers over seven variables and twelve views cannot tell a foreign id
-space from missing content — the same total fits both. Attribute per variable
-and check per item; the shape of an unresolved entry's value is usually the
-cheapest thing that names its namespace.
-
-**A probe that can describe only one shape returns silence for every other
-one.** Asking for a value's dictionary keys when the value is a list reports an
-empty result that reads exactly like "nothing there". Record the type first,
-then the structure, then a bounded rendering.
-
-**A container is not a member of itself.** A view's id is its diagram object's
-id here, so the object turns up in its own view's file; counting that as
-missing membership put ten false positives into a finding of twenty-eight.
-When a check excludes a population, carry the excluded count in the output —
-a filter that leaves no trace makes the number it produces uncheckable.
-
-**Check the side of a mapping that points at the model.** `objectReferences`
-is {diagram element id: object id}; counting unresolved KEYS reported 504 of
-549 on three consecutive runs, all correct arithmetic about the wrong side. The
-keys are a presentation namespace by design and can only ever be red — which
-teaches everyone to skip the finding. Guard the values instead.
-
-**Narrow an exclusion to what was measured.** `is refinement of` appears 6,860
-times and only 382 of its sources are views; excluding the verb wholesale would
-have suppressed thousands of unrelated pairs. Exclude the specific case
-observed — an edge whose source IS the view being checked — not the general
-shape it belongs to.
-
-**Once an exclusion is validated, move its finding to registered.** A check on
-something deliberately excluded reads 100% by construction; leaving it in the
-failing population makes a permanently red number that everyone learns to
-ignore, and it drowns the aggregate meant to catch real ones. Keep it
-reporting, stop it counting.
-
-**A count is not a characterisation.** Ten documentation sections cleaning to
-nothing had been reported as a bare number on every run without anyone seeing
-one — and empty markup and a discarded image produce the identical count. Carry
-the tag inventory and a bounded rendering with any finding you intend to
-register, because you cannot set a bound on something you have not looked at.
-
-**A bound nothing compares is a comment.** Every exclusion here carried a
-`bound` field from the first version and nothing ever read it — including the
-docstring that said registered findings were "within their bound". Harmless
-while everything is observe-only; the moment the gate enforces it is a hole the
-size of the entire registered population, because a registered finding never
-fails and could grow without limit. Registering something is a decision about a
-quantity, so the quantity has to bind.
-
-**Set the bound to the measured value, not a margin around it.** A published
-source version does not drift, so a change means the source changed and the
-decision is due again. A margin only buys silence for the first thing that
-moves.
-
-**Do not bound a sample-dependent count.** An absolute bound on a finding whose
-denominator is the sample size fails when the sample changes rather than when
-the content does. Leave it unbounded and say why.
+Some BIAN markup puts quotes **outside** the list item, so breaking at every
+boundary strands a bare `"` on its own line; the cleaner folds a
+punctuation-only segment back into its neighbour, but only at boundaries it
+inserted itself. BIAN also uses a row of dots and a lone full stop as
+deliberate separators on their own lines, which must survive untouched.
 
 ## Etiquette and legal
 

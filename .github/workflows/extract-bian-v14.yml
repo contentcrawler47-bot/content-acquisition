@@ -132,6 +132,7 @@ jobs:
           python3 tools/check_extract.py "out/_extract/$SOURCE_ID" \
             ${{ inputs.require_schema && '--require-schema' || '' }} \
             --require-gate \
+            ${{ inputs.gate_observe_only && '--allow-observe-only' || '' }} \
             --canary-id "$CANARY_ID" \
             --canary-name "$CANARY_NAME" \
             --min-objects "$MIN_OBJECTS" \
