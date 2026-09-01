@@ -158,8 +158,19 @@ def parse_js_assignment(text: str):
 
 #: `data/models_data.js` defines `insite_models`, the only published statement
 #: of a view's PURPOSE. `insiteViews` gives a view a name; nothing else says
-#: what it is for, and zero ArchiMate viewpoints are declared anywhere in the
-#: landscape.
+#: what it is for.
+#:
+#: On ArchiMate viewpoints: `data/view_<id>_data.js` declares `viewpointsData`
+#: and `vp_legends`, and on run 33468063747 both were present and EMPTY in all
+#: twelve views of a sample stratified across diagram categories -- 12 of
+#: 2,285. So the landscape declares no viewpoints, as far as anything has
+#: actually looked.
+#:
+#: This comment previously asserted that flatly, and the number behind it came
+#: from a probe whose thirty fetches had ALL failed on a path later proved
+#: wrong. It was right by luck. Gate finding G61 keeps probing these fields
+#: every run, because empty today is not empty in v15, and a claim with no
+#: live measurement behind it decays into exactly what this one was.
 #:
 #: The file is not in the documented layout, so the location is discovered by
 #: trying candidates rather than asserted. That is deliberate: the probe found

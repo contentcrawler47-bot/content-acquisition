@@ -66,7 +66,7 @@ from bianlib import landscape as L
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "2"
+GATE_VERSION = "3"
 
 # --- the declaration -------------------------------------------------------
 #
@@ -124,6 +124,23 @@ HANDLED_HTML_TAGS = {"p", "br"}
 INLINE_HTML_TAGS = {"span", "b", "i", "em", "strong", "u", "a", "font", "sup",
                     "sub", "small", "big", "code", "tt"}
 
+#: The variables `data/view_<id>_data.js` declares. MEASURED on run
+#: 33468063747: all seven present in all twelve sampled views. Nothing on the
+#: bulk path reads any of them.
+#:
+#: Gate v1 saw only `objectData`, because it read the file with
+#: parse_js_assignment -- one value, from a file that declares seven. That is
+#: how "viewpoints declared: 0" came back as a zero rather than as the NOT
+#: MEASURED it was.
+#:
+#: `viewpointsData` and `vp_legends` are present and EMPTY in all twelve, which
+#: is the first real measurement of the ArchiMate viewpoint question. Empty is
+#: not absent and neither is a licence to stop probing: a later landscape
+#: version can fill them, and only a run that keeps looking would notice.
+VIEW_DATA_FIELDS = ("objectData", "objectReferences", "objectRelations",
+                    "viewData", "viewReferences", "viewpointsData",
+                    "vp_legends")
+
 
 # --- the exclusions register -----------------------------------------------
 #
@@ -169,6 +186,16 @@ EXCLUSIONS = [
      "where": "landscape.is_structural (stage 2 only)",
      "why": "They carry no documentation and their edges render inline on "
             "each real object. Stage 1 keeps them; only the bundle drops them.",
+     "bound": None},
+    {"code": "X-VIEW-DATA", "what": "data/view_<id>_data.js (all seven vars)",
+     "where": "never read on the bulk path",
+     "why": "MEASURED on run 33468063747 across 12 of 2,285 views, stratified "
+            "by diagram category. viewpointsData and vp_legends present and "
+            "EMPTY in all twelve; objectReferences non-empty in eleven, in an "
+            "id space where 504 of 549 keys resolve to no object and no view "
+            "we hold. Kept out on the working belief that it is per-diagram "
+            "presentation data -- a BELIEF, not a validated exclusion, and "
+            "G63 is what would contradict it.",
      "bound": None},
     {"code": "X-OBJECT-PAGE", "what": "object_16.html",
      "where": "never fetched",
@@ -538,9 +565,19 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         # of the field with absence of content, and this project has already
         # recorded a viewpoint count of zero produced entirely by requests
         # that failed. `present_empty` and `absent` must stay distinguishable.
+        # The fields probed for content, taken from what run 33468063747
+        # OBSERVED this file to declare, not from a reading of the orientation
+        # map. `typeIconPath` was in this list and is not in this file at all
+        # -- it lives on the object wrapper in the shards, where it is already
+        # declared and consumed. So the gate demanded a field from the wrong
+        # artefact and correctly reported that it could not measure it: the
+        # mechanism was right and the premise was wrong, which failed the run
+        # on my error rather than on anything in the source.
+        #
+        # A probe list copied from documentation tests the documentation. This
+        # one is derived from the file.
         probe = {k: {"present_nonempty": 0, "present_empty": 0, "absent": 0}
-                 for k in ("viewpointsData", "vp_legends", "objectReferences",
-                           "typeIconPath")}
+                 for k in VIEW_DATA_FIELDS}
         for _vid, payload in view_data.items():
             for var, value in payload.items():
                 _bump(variables, var)
@@ -563,6 +600,40 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         inv["view_data_keys"] = vkeys
         inv["view_data_fields"] = probe
         inv["view_data_sample"] = len(view_data)
+        # WHICH views were sampled. Run 33468063747 recorded that twelve were
+        # drawn and not which twelve, so nothing about that sample could be
+        # re-checked or reproduced -- a finding over an unidentifiable sample
+        # is a number you have to take on trust.
+        inv["view_data_sampled_ids"] = sorted(view_data, key=str)
+
+        # RECONCILE the identifiers these files use against the ones we hold.
+        #
+        # Run 33468063747's sample carried 549 numeric keys, of which 44 were
+        # known object ids, 19 known view ids and 504 matched nothing in an
+        # extract holding 128,270 objects and 72,606 view memberships. So this
+        # file is either presentation data in a per-diagram id space we have
+        # never captured, or an identifier space with model content in it. The
+        # difference matters and was established by hand once; a hand
+        # measurement that is not a check does not survive the next landscape
+        # version.
+        known_objects = set(map(str, objects))
+        known_views = set(map(str, landscape.insite_views))
+        numeric = {k for k in vkeys if str(k).isdigit()}
+        unknown = numeric - known_objects - known_views
+        inv["view_data_ids"] = {
+            "numeric_keys": len(numeric),
+            "known_object_id": len(numeric & known_objects),
+            "known_view_id": len(numeric & known_views),
+            "unresolved": len(unknown),
+        }
+        findings.append(_finding(
+            "G63-VIEWDATA-IDS",
+            "identifiers in per-view files that resolve to nothing we hold",
+            len(unknown), len(numeric) or 1, THRESHOLDED,
+            "SAMPLE. Unresolved ids are not necessarily loss -- they are "
+            "most likely per-diagram element ids -- but until that is "
+            "established they are an identifier space of unknown content",
+            sampled=True))
 
         # Nothing on the bulk path reads this file, so anything it carries is
         # unconsumed. Reported over the SAMPLE SIZE as its denominator, and
