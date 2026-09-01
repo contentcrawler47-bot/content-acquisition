@@ -62,12 +62,12 @@ from __future__ import annotations
 import re
 
 from bianlib import landscape as L
-from core.render import ALNUM_RE, clean_html_v2
+from core.render import ALNUM_RE, SEPARATING_TAGS, clean_html_legacy
 
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "6"
+GATE_VERSION = "7"
 
 #: How many before/after pairs G26 carries in the extract. Bounded: the point
 #: is enough evidence to judge the change by, not a second copy of the corpus.
@@ -119,9 +119,16 @@ HANDLED_INSITE_VIEW_KEYS = {"id", "name"}
 HANDLED_MODEL_KEYS = {"name", "views"}
 HANDLED_MODEL_VIEW_KEYS = {"id", "title"}
 
-#: Tags `clean_html` turns into a paragraph break. Every OTHER tag is deleted
-#: with no separator, so a tag outside this set can silently join two words.
-HANDLED_HTML_TAGS = {"p", "br"}
+#: Tags `clean_html` turns into a separator, IMPORTED from the cleaner rather
+#: than restated here. Every other tag is deleted with no separator, so a tag
+#: outside this set can silently join two words.
+#:
+#: This was a literal {"p", "br"} maintained beside the cleaner. After
+#: changeset 059 the cleaner also separates li, ul, ol, table rows and cells
+#: and the rest, and a hand-kept copy would have gone on reporting 138 values
+#: at risk from tags that are now handled -- a check drifting into a false
+#: alarm, which is how a check stops being read.
+HANDLED_HTML_TAGS = set(SEPARATING_TAGS)
 
 #: Tags that are deleted but cannot join words, because they are inline and
 #: their content is continuous prose. Declared so the finding below reports
@@ -448,8 +455,8 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                     # what would move. This is the before/after, produced by
                     # the run on the source, rather than by an example chosen
                     # to show the fix working.
-                    before = L.clean_html(value)
-                    after = clean_html_v2(value)
+                    before = clean_html_legacy(value)
+                    after = L.clean_html(value)
                     # A stranding is a punctuation-only line the proposed
                     # cleaner INTRODUCES, not one the value already had.
                     #
@@ -564,6 +571,11 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
     inv["documentation_published"] = doc_values_published
     inv["clean_html_v2_samples"] = clean_samples
     inv["clean_html_v2_stranded_samples"] = stranded_samples
+    # The comparison is now retired-vs-live, so it confirms the adopted change
+    # for a run or two and then stops meaning anything. G26 and G27 and
+    # clean_html_legacy come out together once that has happened; a check
+    # comparing against a function nothing uses still reads like evidence.
+    inv["clean_html_comparison"] = "clean_html_legacy (retired) vs clean_html"
 
     # G27 is FAIL-ALWAYS on the published population. A stranded delimiter is
     # a value the current cleaner renders readably and the proposed one
@@ -572,7 +584,7 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
     # adopting is lost if the measurement can pass while broken.
     findings.append(_finding(
         "G27-CLEAN-STRANDED",
-        "published values where the proposed cleaner strands punctuation on "
+        "published values where the adopted cleaner strands punctuation on "
         "its own line",
         clean_stranded_published, doc_values_published or 1, FAIL_ALWAYS,
         f"{clean_stranded} across all objects"))
@@ -582,7 +594,8 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
     # reformatted is not a risk to anything.
     findings.append(_finding(
         "G26-CLEAN-DELTA",
-        "published documentation values the proposed cleaner would change",
+        "published documentation values the adopted cleaner changed "
+        "against the retired one",
         clean_changed_published, doc_values_published or 1, THRESHOLDED,
         f"{clean_changed} across all objects; "
         f"{len(clean_samples)} before/after pairs carried in the inventory"))

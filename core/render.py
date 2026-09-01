@@ -22,8 +22,21 @@ TAG_RE = re.compile(r"<[^>]+>")
 WS_RE = re.compile(r"[ \t]+")
 
 
-def clean_html(value: str) -> str:
-    """Reduce an HTML fragment to plain text, keeping paragraph breaks."""
+def clean_html_legacy(value: str) -> str:
+    """The cleaner used up to changeset 058. RETIRED, not deleted.
+
+    It deleted every tag it did not turn into a newline, and deleted it with
+    no separator, so `<td>A</td><td>B</td>` became `AB` and list items ran
+    together. Run 33481175804 measured the replacement changing 36 of 5,734
+    published documentation values, introducing no stranded punctuation, and
+    leaving all 28,096 values without block tags byte-identical.
+
+    Kept only so gate finding G26 can keep reporting the delta for a couple of
+    runs after the switch. It should be deleted once G26 goes -- a comparison
+    against a function nothing uses measures a hypothetical, and a check that
+    measures a hypothetical is worse than no check, because it still reads
+    like evidence.
+    """
     if not value:
         return ""
     s = re.sub(r"<p[^>]*>|<br\s*/?>|</p>", "\n", value, flags=re.I)
@@ -33,26 +46,41 @@ def clean_html(value: str) -> str:
     return "\n".join(l.strip() for l in s.splitlines() if l.strip()).strip()
 
 
-#: Block-level tags whose CLOSE is a boundary between two pieces of text.
-#: `clean_html` deletes every tag it does not turn into a newline, and deletes
-#: it with no separator, so `<td>A</td><td>B</td>` becomes `AB`. Run
-#: 33475772058 measured 138 of 28,983 documentation values carrying li, ol,
-#: ul, table, td or tr.
-BLOCK_BOUNDARY_RE = re.compile(
-    r"</?\s*(?:li|ul|ol|tr|thead|tbody|table|div|h[1-6]|blockquote|dd|dt|dl)"
-    r"[^>]*>", re.I)
+#: The tags that produce a separator, as SETS -- the regexes below are built
+#: from them so the two cannot drift. The gate imports SEPARATING_TAGS as its
+#: declaration of what is handled, rather than keeping a second list: a
+#: declaration maintained beside the parser instead of derived from it is how
+#: `title` came to be declared handled while being dropped on table
+#: categories, and how a missing `id` produced a 100% finding out of nothing.
+PARAGRAPH_TAGS = frozenset({"p", "br"})
+
+#: Block-level tags whose boundary is a line break.
+BLOCK_BOUNDARY_TAGS = frozenset({
+    "li", "ul", "ol", "tr", "thead", "tbody", "table", "div", "blockquote",
+    "dd", "dt", "dl", "h1", "h2", "h3", "h4", "h5", "h6"})
 
 #: A table CELL boundary is a separator within a line, not a line break.
-CELL_BOUNDARY_RE = re.compile(r"</\s*(?:td|th)\s*>", re.I)
+CELL_BOUNDARY_TAGS = frozenset({"td", "th"})
+
+SEPARATING_TAGS = PARAGRAPH_TAGS | BLOCK_BOUNDARY_TAGS | CELL_BOUNDARY_TAGS
+
+BLOCK_BOUNDARY_RE = re.compile(
+    r"</?\s*(?:" + "|".join(sorted(BLOCK_BOUNDARY_TAGS)) + r")[^>]*>", re.I)
+
+CELL_BOUNDARY_RE = re.compile(
+    r"</\s*(?:" + "|".join(sorted(CELL_BOUNDARY_TAGS)) + r")\s*>", re.I)
 
 
-def clean_html_v2(value: str) -> str:
-    """`clean_html`, with block boundaries preserved as separators.
+def clean_html(value: str) -> str:
+    """Reduce an HTML fragment to plain text, keeping every text boundary.
 
-    NOT YET USED BY THE PIPELINE. It ships here so the gate can run it beside
-    the current function over every real documentation value and report how
-    many actually change, before anything published moves. Adopting it on the
-    strength of a constructed example would be testing the example.
+    ADOPTED in changeset 059, on the measurements from run 33481175804 rather
+    than on an argument: 36 of 5,734 published values change, 133 across all
+    objects, no stranded punctuation introduced, and all 28,096 values without
+    block tags byte-identical. It shipped unused for three changesets so those
+    numbers could be taken while the old behaviour was still producing the
+    stored text -- once the cleaner changes there is nothing left to compare
+    against.
 
     The change is deliberately minimal: insert the separator that deletion
     removes, and nothing else. Cells are joined with a space and rows and list

@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v11 | repo: changeset 058 -->
+<!-- skill: bian-extraction v12 | repo: changeset 059 -->
 
 # BIAN Service Landscape extraction
 
@@ -314,6 +314,17 @@ after were byte-identical — including the very value the fix was built to
 protect. Compare the two outputs and count only what the change introduced.
 Proving the detector fires is necessary and not sufficient; it must also be
 shown not to fire on what it should ignore.
+
+**Retire the old implementation, do not delete it — then delete it.** Keep it
+just long enough for the delta check to confirm the switch on a real run, and
+take it out together with that check. A comparison against a function nothing
+uses measures a hypothetical, and still reads like evidence.
+
+**When a fix widens what the code handles, widen the declaration with it — by
+importing, not by editing a copy.** A check that goes on counting values at
+risk from tags the cleaner now separates is a false alarm, and a false alarm is
+how a check stops being read. Derive the declaration from the sets the parser
+itself uses.
 
 ## Etiquette and legal
 
