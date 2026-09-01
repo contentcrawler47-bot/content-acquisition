@@ -62,15 +62,15 @@ from __future__ import annotations
 import re
 
 from bianlib import landscape as L
-from core.render import ALNUM_RE, SEPARATING_TAGS, clean_html_legacy
+from core.render import ALNUM_RE, SEPARATING_TAGS, clean_html_stranded
 
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "7"
+GATE_VERSION = "8"
 
-#: How many before/after pairs G26 carries in the extract. Bounded: the point
-#: is enough evidence to judge the change by, not a second copy of the corpus.
+#: How many evidence samples a finding carries in the extract. Bounded: the
+#: point is enough to judge a finding by, not a second copy of the corpus.
 GATE_CLEAN_SAMPLES = 25
 
 # --- the declaration -------------------------------------------------------
@@ -350,26 +350,15 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
     multi_data = 0
     multi_table = 0
     table_titles = 0
-    #: G26. What the proposed cleaner would actually change, measured on the
-    #: source rather than argued from an example. Split by whether the object
-    #: survives the stage 2 allowlist, because "138 values" and "138 PUBLISHED
-    #: values" are different claims and only the second is about what anyone
-    #: reads.
-    clean_changed = 0
-    clean_changed_published = 0
     doc_values_published = 0
     boundary_tag_published = 0
     empty_after_clean_published = 0
-    #: A bounded before/after sample, so the next changeset can be judged on
-    #: what it does rather than on what it is supposed to do. Bounded because
-    #: this rides in the extract, and truncated per value for the same reason.
-    clean_samples: list = []
-    #: G27. Values where the proposed cleaner emits a line carrying no letter
-    #: or digit -- punctuation that lost the text it belonged to. Run
-    #: 33477632935 produced one (object 141803) out of 25 carried pairs, in
-    #: markup that puts the quotes outside the list item. Counted every run so
-    #: the NEXT such case arrives as a number rather than as something spotted
-    #: by eye in a sample of 25.
+    #: G27. Values where the cleaner leaves punctuation alone on a line at a
+    #: boundary IT inserted. The cleaner reports its own residue now that the
+    #: retired function is gone: comparing against a function nothing calls
+    #: measures a hypothetical, and comparing against the source flags BIAN's
+    #: own dot-separator lines, which is the false positive that failed run
+    #: 33480408308.
     clean_stranded = 0
     clean_stranded_published = 0
     stranded_samples: list = []
@@ -451,54 +440,17 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                         empty_after_clean += 1
                         if published:
                             empty_after_clean_published += 1
-                    # G26: run both cleaners over the real value and record
-                    # what would move. This is the before/after, produced by
-                    # the run on the source, rather than by an example chosen
-                    # to show the fix working.
-                    before = clean_html_legacy(value)
-                    after = L.clean_html(value)
-                    # A stranding is a punctuation-only line the proposed
-                    # cleaner INTRODUCES, not one the value already had.
-                    #
-                    # This counted every bare-punctuation line in the output
-                    # regardless of origin, so run 33480408308 reported 2
-                    # published and 65 total where before and after were
-                    # byte-identical: BIAN's own markup puts a row of dots on
-                    # its own line (object 147626) and a lone full stop after
-                    # a citation (object 40452), and <p> breaks have always
-                    # rendered them that way. The check flagged the very value
-                    # the confined fold was built to protect.
-                    #
-                    # Measuring the presence of a symptom rather than the
-                    # delta is the same fault as reporting a count without its
-                    # denominator: it cannot distinguish what the change did
-                    # from what was already there.
-                    if before != after:
-                        introduced = _stranded_lines(after) - \
-                            _stranded_lines(before)
-                        if introduced:
-                            clean_stranded += 1
-                            if published:
-                                clean_stranded_published += 1
-                                if len(stranded_samples) < GATE_CLEAN_SAMPLES:
-                                    stranded_samples.append({
-                                        "object": str(oid),
-                                        "category": category,
-                                        "lines": sorted(introduced)[:6],
-                                        "before": before[:400],
-                                        "after": after[:400]})
-                    if before != after:
-                        clean_changed += 1
+                    introduced = clean_html_stranded(value)
+                    if introduced:
+                        clean_stranded += 1
                         if published:
-                            clean_changed_published += 1
-                            if len(clean_samples) < GATE_CLEAN_SAMPLES:
-                                clean_samples.append({
+                            clean_stranded_published += 1
+                            if len(stranded_samples) < GATE_CLEAN_SAMPLES:
+                                stranded_samples.append({
                                     "object": str(oid),
                                     "category": category,
-                                    "section": title,
-                                    "tags": sorted(boundary),
-                                    "before": before[:400],
-                                    "after": after[:400]})
+                                    "lines": introduced[:6],
+                                    "text": L.clean_html(value)[:400]})
         if tables > 1:
             multi_table += 1
 
@@ -569,36 +521,23 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         empty_after_clean, doc_values, THRESHOLDED,
         f"{empty_after_clean_published} of them on published objects"))
     inv["documentation_published"] = doc_values_published
-    inv["clean_html_v2_samples"] = clean_samples
-    inv["clean_html_v2_stranded_samples"] = stranded_samples
-    # The comparison is now retired-vs-live, so it confirms the adopted change
-    # for a run or two and then stops meaning anything. G26 and G27 and
-    # clean_html_legacy come out together once that has happened; a check
-    # comparing against a function nothing uses still reads like evidence.
-    inv["clean_html_comparison"] = "clean_html_legacy (retired) vs clean_html"
+    inv["clean_stranded_samples"] = stranded_samples
 
     # G27 is FAIL-ALWAYS on the published population. A stranded delimiter is
-    # a value the current cleaner renders readably and the proposed one
-    # breaks, so it is a regression rather than a quantity to tolerate, and
-    # observe-only must not wave it through: the point of measuring before
-    # adopting is lost if the measurement can pass while broken.
+    # published text the cleaner broke, so it is a regression to remove rather
+    # than a quantity to tolerate, and observe-only must not wave it through.
+    #
+    # G26 measured the adoption itself and is GONE. Run 33482212782 confirmed
+    # its prediction to the value -- 133 changed, 36 published, exactly as
+    # forecast -- and G24 fell from 138 to zero independently. A check that has
+    # answered its question and is kept anyway starts measuring a hypothetical
+    # while still reading like evidence.
     findings.append(_finding(
         "G27-CLEAN-STRANDED",
-        "published values where the adopted cleaner strands punctuation on "
-        "its own line",
+        "published values where the cleaner leaves punctuation alone on a "
+        "line at a boundary it inserted",
         clean_stranded_published, doc_values_published or 1, FAIL_ALWAYS,
         f"{clean_stranded} across all objects"))
-
-    # G26 is the decision this measurement exists to inform: adopt v2 or not.
-    # THRESHOLDED on the PUBLISHED count, because a value nobody reads being
-    # reformatted is not a risk to anything.
-    findings.append(_finding(
-        "G26-CLEAN-DELTA",
-        "published documentation values the adopted cleaner changed "
-        "against the retired one",
-        clean_changed_published, doc_values_published or 1, THRESHOLDED,
-        f"{clean_changed} across all objects; "
-        f"{len(clean_samples)} before/after pairs carried in the inventory"))
 
     findings.append(_finding(
         "G24-HTML-TAG", "documentation values carrying a boundary tag "
@@ -742,16 +681,49 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
 
         # RECONCILE the identifiers these files use against the ones we hold.
         #
-        # Run 33468063747's sample carried 549 numeric keys, of which 44 were
-        # known object ids, 19 known view ids and 504 matched nothing in an
-        # extract holding 128,270 objects and 72,606 view memberships. So this
-        # file is either presentation data in a per-diagram id space we have
-        # never captured, or an identifier space with model content in it. The
-        # difference matters and was established by hand once; a hand
-        # measurement that is not a check does not survive the next landscape
-        # version.
+        # Run 33482212782 aggregated 549 numeric keys across seven variables
+        # and twelve views: 44 known object ids, 19 known view ids, 504
+        # matching nothing in an extract holding 128,270 objects and 72,606
+        # view memberships. Aggregated, that cannot answer the question it
+        # raises. Two explanations fit and they have opposite consequences:
+        # either these are per-diagram element ids, in which case the file is
+        # presentation data and X-VIEW-DATA is a validated exclusion, or
+        # all_objects_on_views.js is giving us incomplete membership, which is
+        # loss in something already published.
+        #
+        # So attribute the keys PER VARIABLE, and check membership PER VIEW.
+        # An id space is identified by which variable uses it, and the loss
+        # question is settled by whether object ids in a view's own file are
+        # recorded as members of that view.
         known_objects = set(map(str, objects))
         known_views = set(map(str, landscape.insite_views))
+
+        per_variable: dict = {}
+        value_shapes: dict = {}
+        unresolved_examples: list = []
+        for _vid, payload in view_data.items():
+            for var, value in payload.items():
+                keys = {k for k in _keys_of(value) if str(k).isdigit()}
+                slot = per_variable.setdefault(
+                    var, {"numeric_keys": 0, "known_object_id": 0,
+                          "known_view_id": 0, "unresolved": 0})
+                slot["numeric_keys"] += len(keys)
+                slot["known_object_id"] += len(keys & known_objects)
+                slot["known_view_id"] += len(keys & known_views)
+                loose = keys - known_objects - known_views
+                slot["unresolved"] += len(loose)
+                # What an unresolved entry LOOKS like. The keys of its value
+                # are the cheapest thing that could name the id space -- an
+                # `objectId` or a `name` in there settles it outright.
+                for key in sorted(loose)[:2]:
+                    entry = L._d(value).get(key) if isinstance(value, dict) else None
+                    shape = sorted(_keys_of(entry))
+                    for field in shape:
+                        _bump(value_shapes, f"{var}.{field}")
+                    if len(unresolved_examples) < GATE_CLEAN_SAMPLES:
+                        unresolved_examples.append(
+                            {"variable": var, "id": str(key), "shape": shape})
+
         numeric = {k for k in vkeys if str(k).isdigit()}
         unknown = numeric - known_objects - known_views
         inv["view_data_ids"] = {
@@ -760,13 +732,61 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
             "known_view_id": len(numeric & known_views),
             "unresolved": len(unknown),
         }
+        inv["view_data_ids_by_variable"] = per_variable
+        inv["view_data_unresolved_shapes"] = value_shapes
+        inv["view_data_unresolved_examples"] = unresolved_examples
+
         findings.append(_finding(
             "G63-VIEWDATA-IDS",
             "identifiers in per-view files that resolve to nothing we hold",
             len(unknown), len(numeric) or 1, THRESHOLDED,
-            "SAMPLE. Unresolved ids are not necessarily loss -- they are "
-            "most likely per-diagram element ids -- but until that is "
-            "established they are an identifier space of unknown content",
+            "SAMPLE. Attributed per variable in view_data_ids_by_variable; "
+            "an id space is named by which variable uses it",
+            sampled=True))
+
+        # G64 IS THE LOSS QUESTION, and the only one of these that could be
+        # content rather than presentation.
+        #
+        # For each sampled view, take the ids in its own data file that ARE
+        # known objects, and ask whether all_objects_on_views.js records them
+        # as members of that view. Anything it misses is membership we publish
+        # incompletely. Per view, never aggregated: run 33482212782's 18-of-549
+        # overlap was computed across twelve views at once and so could not
+        # distinguish a foreign id space from missing membership.
+        # `on_views` is {objectId: [viewIds]}, so invert it once. Read from
+        # the loaded model rather than from the extract: the extract is a
+        # projection, and a check that reads its own output can only confirm
+        # the projection, not the source it came from.
+        members_of: dict = {}
+        for oid, vids in (landscape.on_views or {}).items():
+            for vid in L._l(vids):
+                members_of.setdefault(str(vid), set()).add(str(oid))
+
+        missing_members = 0
+        checked_members = 0
+        missing_examples: list = []
+        for vid, payload in view_data.items():
+            held = members_of.get(str(vid), set())
+            for var, value in payload.items():
+                for key in _keys_of(value):
+                    if str(key) not in known_objects:
+                        continue
+                    checked_members += 1
+                    if str(key) not in held:
+                        missing_members += 1
+                        if len(missing_examples) < GATE_CLEAN_SAMPLES:
+                            missing_examples.append(
+                                {"view": str(vid), "variable": var,
+                                 "object": str(key)})
+        inv["view_membership_missing_examples"] = missing_examples
+        findings.append(_finding(
+            "G64-VIEW-MEMBERSHIP",
+            "objects named by a view's own data file that the published "
+            "membership does not record for that view",
+            missing_members, checked_members or 1, THRESHOLDED,
+            "SAMPLE. Non-zero means all_objects_on_views.js is incomplete, "
+            "which is loss in something already published; zero means the "
+            "unresolved ids in G63 are a foreign space, not missing content",
             sampled=True))
 
         # Nothing on the bulk path reads this file, so anything it carries is

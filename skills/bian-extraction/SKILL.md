@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v12 | repo: changeset 059 -->
+<!-- skill: bian-extraction v13 | repo: changeset 060 -->
 
 # BIAN Service Landscape extraction
 
@@ -325,6 +325,18 @@ importing, not by editing a copy.** A check that goes on counting values at
 risk from tags the cleaner now separates is a false alarm, and a false alarm is
 how a check stops being read. Derive the declaration from the sets the parser
 itself uses.
+
+**Retire a check once it has answered its question.** A measurement built to
+decide one change stops being evidence the moment the change lands; keeping it
+leaves something that still reads like a check while testing a hypothetical.
+Remove it together with whatever it was comparing against, and give any check
+that outlives it a baseline it can compute on its own.
+
+**Aggregating across a sample destroys the attribution you need.** Counting 549
+identifiers over seven variables and twelve views cannot tell a foreign id
+space from missing content — the same total fits both. Attribute per variable
+and check per item; the shape of an unresolved entry's value is usually the
+cheapest thing that names its namespace.
 
 ## Etiquette and legal
 

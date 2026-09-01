@@ -22,30 +22,6 @@ TAG_RE = re.compile(r"<[^>]+>")
 WS_RE = re.compile(r"[ \t]+")
 
 
-def clean_html_legacy(value: str) -> str:
-    """The cleaner used up to changeset 058. RETIRED, not deleted.
-
-    It deleted every tag it did not turn into a newline, and deleted it with
-    no separator, so `<td>A</td><td>B</td>` became `AB` and list items ran
-    together. Run 33481175804 measured the replacement changing 36 of 5,734
-    published documentation values, introducing no stranded punctuation, and
-    leaving all 28,096 values without block tags byte-identical.
-
-    Kept only so gate finding G26 can keep reporting the delta for a couple of
-    runs after the switch. It should be deleted once G26 goes -- a comparison
-    against a function nothing uses measures a hypothetical, and a check that
-    measures a hypothetical is worse than no check, because it still reads
-    like evidence.
-    """
-    if not value:
-        return ""
-    s = re.sub(r"<p[^>]*>|<br\s*/?>|</p>", "\n", value, flags=re.I)
-    s = TAG_RE.sub("", s)
-    s = html.unescape(s).replace("\xa0", " ")
-    s = WS_RE.sub(" ", s)
-    return "\n".join(l.strip() for l in s.splitlines() if l.strip()).strip()
-
-
 #: The tags that produce a separator, as SETS -- the regexes below are built
 #: from them so the two cannot drift. The gate imports SEPARATING_TAGS as its
 #: declaration of what is handled, rather than keeping a second list: a
@@ -103,22 +79,53 @@ def clean_html(value: str) -> str:
     """
     if not value:
         return ""
+    # `_prepare` marks the boundaries this function inserts with a sentinel
+    # rather than a newline, so the folding acts only on those. Folding across
+    # pre-existing <p> and <br> breaks edits text whose boundaries were never
+    # being deleted: it merged a row of dots used as a separator onto the line
+    # above it in object 147626.
+    s = _prepare(value)
+    out, _ = _assemble(s)
+    return out
+
+
+def clean_html_stranded(value: str) -> list[str]:
+    """Punctuation-only lines this cleaner leaves at a boundary IT inserted.
+
+    G27's baseline after `clean_html_legacy` was removed. Comparing against the
+    retired function measured a hypothetical once nothing called it; comparing
+    against the source would flag BIAN's own dot-separator lines, which is the
+    false positive that failed run 33480408308. So the cleaner reports its own
+    residue instead: a segment that could not be folded into any neighbour,
+    which can only arise from a boundary this function introduced.
+    """
+    if not value:
+        return []
+    _, stranded = _assemble(_prepare(value))
+    return stranded
+
+
+def _prepare(value: str) -> str:
     s = re.sub(r"<p[^>]*>|<br\s*/?>|</p>", "\n", value, flags=re.I)
     s = CELL_BOUNDARY_RE.sub(" ", s)
-    # A sentinel, not a newline, so the folding below can act ONLY on breaks
-    # this function introduced. Folding across pre-existing <p> and <br>
-    # breaks edits text whose boundaries were never being deleted: it merged
-    # a row of dots used as a separator onto the line above it in object
-    # 147626, and nine values moved that have no block tags at all.
     s = BLOCK_BOUNDARY_RE.sub("\x00", s)
     s = TAG_RE.sub("", s)
     s = html.unescape(s).replace("\xa0", " ")
-    s = WS_RE.sub(" ", s)
-    out = []
+    return WS_RE.sub(" ", s)
+
+
+def _assemble(s: str) -> tuple[str, list[str]]:
+    """Fold each sentinel-split line, returning the text and any residue."""
+    out: list[str] = []
+    stranded: list[str] = []
     for line in s.split("\n"):
-        parts = _fold_stranded([p.strip() for p in line.split("\x00")])
+        segments = [p.strip() for p in line.split("\x00")]
+        parts = _fold_stranded(segments)
+        if len(segments) > 1:
+            stranded.extend(p for p in parts
+                            if p and not ALNUM_RE.search(p))
         out.extend(p for p in parts if p)
-    return "\n".join(l.strip() for l in out if l.strip()).strip()
+    return "\n".join(l.strip() for l in out if l.strip()).strip(), stranded
 
 
 #: A segment with no letter or digit in it is punctuation that lost its text.
