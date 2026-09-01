@@ -67,7 +67,7 @@ from core.render import ALNUM_RE, SEPARATING_TAGS, clean_html_stranded
 #: Bumped when the declaration or the finding codes change, so a gate result
 #: says which rules produced it. A result without this is uninterpretable
 #: once the rules move.
-GATE_VERSION = "9"
+GATE_VERSION = "10"
 
 #: How many evidence samples a finding carries in the extract. Bounded: the
 #: point is enough to judge a finding by, not a second copy of the corpus.
@@ -104,6 +104,20 @@ HANDLED_PROPERTY_TYPES = {"link", "object", "rtf", "collection", "structure"}
 
 #: `_relations_block` and `extract.build` read `via` and `to`.
 HANDLED_RELATION_KEYS = {"via", "to"}
+
+#: The verb by which a diagram names the object it refines. A view's own
+#: `objectData` carries that object, and it is the diagram's SUBJECT rather
+#: than one of its contents, so membership does not record it and should not.
+#:
+#: MEASURED on run 33486211664: view 28743 "Contact Handler BOM Diagram" is
+#: refinement of object 28742 "Customer Contact", which is a member of view
+#: 53836 where it belongs. That single case was the whole of G64.
+#:
+#: NARROW ON PURPOSE. `is refinement of` appears 6,860 times and only 382 of
+#: its sources are views -- most of it relates Operations to Classes and has
+#: nothing to do with diagrams. So the exclusion applies only to edges whose
+#: source IS the view being checked, never to the verb in general.
+REFINEMENT_VERB = "is refinement of"
 
 #: `Landscape.view_name` reads `name`. `id` is the view's own key echoed into
 #: the value and is read by nothing, declared for the same reason `id` is
@@ -202,14 +216,14 @@ EXCLUSIONS = [
     {"code": "X-VIEW-REFERENCES",
      "what": "objectReferences and viewReferences in the per-view files",
      "where": "never read; reported as G65",
-     "why": "MEASURED on run 33485083570: 504 of 530 objectReferences keys and "
-            "65 of 66 viewReferences keys resolve to no object and no view we "
-            "hold, while objectData and objectRelations resolve completely "
-            "(20 of 20 and 2 of 2). An id space used only by the reference "
-            "variables. A reference is not a membership claim, so the objects "
-            "they DO name being absent from membership is not loss -- but the "
-            "relation itself is unidentified, which is why this is a BELIEF "
-            "and G63 and G65 report it every run.",
+     "why": "VALIDATED on run 33486211664. objectReferences is a mapping of "
+            "{diagram element id: object id}: the KEYS are a per-diagram "
+            "presentation namespace, which is why 504 of 530 resolved to "
+            "nothing, and every one of the 25 sampled VALUES resolved to an "
+            "object we hold. We were reading the wrong side of the mapping. "
+            "objectData and objectRelations resolve completely (20 of 20, 2 "
+            "of 2). Excluded as presentation data; G63 now watches the values, "
+            "which is the property whose breaking would mean something.",
      "bound": None},
     {"code": "X-VIEW-DATA", "what": "data/view_<id>_data.js (all seven vars)",
      "where": "never read on the bulk path",
@@ -713,17 +727,45 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         per_variable: dict = {}
         value_shapes: dict = {}
         unresolved_examples: list = []
+        unresolved_values: list = []
         for _vid, payload in view_data.items():
             for var, value in payload.items():
                 keys = {k for k in _keys_of(value) if str(k).isdigit()}
                 slot = per_variable.setdefault(
                     var, {"numeric_keys": 0, "known_object_id": 0,
-                          "known_view_id": 0, "unresolved": 0})
+                          "known_view_id": 0, "unresolved": 0,
+                          "values": 0, "values_resolved": 0,
+                          "values_unresolved": 0})
                 slot["numeric_keys"] += len(keys)
                 slot["known_object_id"] += len(keys & known_objects)
                 slot["known_view_id"] += len(keys & known_views)
                 loose = keys - known_objects - known_views
                 slot["unresolved"] += len(loose)
+                # THE VALUES ARE THE PART THAT MATTERS.
+                #
+                # `objectReferences` is {diagram element id: object id}. Run
+                # 33486211664 read the sampled values and all 25 resolved to
+                # objects we hold. So the keys are a per-diagram presentation
+                # namespace BY DESIGN, and a finding on them is permanent
+                # noise -- a check that can only ever be red stops being read.
+                # What is worth guarding is that every value still resolves;
+                # that is the property whose breaking would mean something.
+                #
+                # Measured over EVERY value, not the two per variable the
+                # example sampler keeps.
+                for raw in (value or {}).values() if isinstance(value, dict) \
+                        else ():
+                    token = str(raw)
+                    if not token.isdigit():
+                        continue
+                    slot["values"] += 1
+                    if token in known_objects or token in known_views:
+                        slot["values_resolved"] += 1
+                    else:
+                        slot["values_unresolved"] += 1
+                        if len(unresolved_values) < GATE_CLEAN_SAMPLES:
+                            unresolved_values.append(
+                                {"variable": var, "value": token})
                 # What an unresolved entry LOOKS like. The keys of its value
                 # are the cheapest thing that could name the id space -- an
                 # `objectId` or a `name` in there settles it outright.
@@ -767,12 +809,24 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         inv["view_data_unresolved_shapes"] = value_shapes
         inv["view_data_unresolved_examples"] = unresolved_examples
 
+        inv["view_data_unresolved_values"] = unresolved_values
+
+        # G63 now asks whether the reference VALUES resolve. The old form
+        # counted unresolved KEYS and sat at 504 of 549 on three consecutive
+        # runs -- correct arithmetic about the wrong side of a mapping, and a
+        # finding that can only ever be red teaches everyone to skip it.
+        # The key inventory stays in view_data_ids_by_variable as evidence for
+        # the exclusion, but it is no longer a finding.
+        total_values = sum(v["values"] for v in per_variable.values())
+        loose_values = sum(v["values_unresolved"]
+                           for v in per_variable.values())
         findings.append(_finding(
             "G63-VIEWDATA-IDS",
-            "identifiers in per-view files that resolve to nothing we hold",
-            len(unknown), len(numeric) or 1, THRESHOLDED,
-            "SAMPLE. Attributed per variable in view_data_ids_by_variable; "
-            "an id space is named by which variable uses it",
+            "per-view reference values that resolve to no object and no view "
+            "we hold",
+            loose_values, total_values or 1, THRESHOLDED,
+            "SAMPLE. The KEYS are per-diagram element ids by design "
+            "(X-VIEW-REFERENCES); the values are what point at the model",
             sampled=True))
 
         # G64 IS THE LOSS QUESTION, and the only one of these that could be
@@ -807,9 +861,25 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
         #
         # One number over both could only ever be uninterpretable. This is the
         # same aggregation fault as G63's 549 keys, one level down.
+        # What each view refines, from the view's OWN outgoing edges. The
+        # inverse verb `is refined in` carries the same 6,860 pairs from the
+        # other side; either direction would do, and this one needs no
+        # reverse index.
+        refines: dict = {}
+        for src, edges in (landscape.relations or {}).items():
+            for edge in L._l(edges):
+                if not isinstance(edge, dict):
+                    continue
+                if (edge.get("via") or "").strip() != REFINEMENT_VERB:
+                    continue
+                for target in L._l(edge.get("to")):
+                    if isinstance(target, (str, int)):
+                        refines.setdefault(str(src), set()).add(str(target))
+
         per_var_missing: dict = {}
         missing_examples: list = []
         self_reference = 0
+        refinement_subject = 0
         for vid, payload in view_data.items():
             held = members_of.get(str(vid), set())
             for var, value in payload.items():
@@ -825,6 +895,11 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                         # a number stops being checkable.
                         self_reference += 1
                         continue
+                    if str(key) in refines.get(str(vid), ()):
+                        # The object this diagram refines: its subject, not
+                        # its contents. Also counted, for the same reason.
+                        refinement_subject += 1
+                        continue
                     slot["checked"] += 1
                     if str(key) not in held:
                         slot["missing"] += 1
@@ -832,8 +907,10 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
                             missing_examples.append(
                                 {"view": str(vid), "variable": var,
                                  "object": str(key)})
-        inv["view_membership"] = dict(per_var_missing,
-                                      **{"self_reference": self_reference})
+        inv["view_membership"] = dict(
+            per_var_missing,
+            **{"self_reference": self_reference,
+               "refinement_subject": refinement_subject})
         inv["view_membership_missing_examples"] = missing_examples
 
         # G64 is the loss question, and it is asked of `objectData` ALONE:
@@ -848,8 +925,9 @@ def observe(landscape, config=None, view_data=None, shard_results=None) -> dict:
             "membership does not record for that view",
             contents["missing"], contents["checked"] or 1, THRESHOLDED,
             "SAMPLE, excluding the view's own diagram object "
-            f"({self_reference} of those). Non-zero is loss in something "
-            "already published",
+            f"({self_reference}) and the object it refines "
+            f"({refinement_subject}). Non-zero is loss in something already "
+            "published",
             sampled=True))
 
         # The reference variables are reported SEPARATELY and as REGISTERED.

@@ -3,7 +3,7 @@ name: bian-extraction
 description: Extract content from the BIAN Service Landscape website (bian.org/servicelandscape-*) — service domains, service operations, control records, the UML data model, and sequence and class diagrams. Use this skill whenever the user mentions BIAN, the Banking Industry Architecture Network, service domains, service landscapes, InSite, or asks to scrape, harvest, crawl, or read content from bian.org, even if they do not name the site explicitly. Also use it when a task involves banking reference architecture, BIAN service operation APIs, or converting BIAN diagrams to PlantUML. It saves many hours: the landscape looks like a JavaScript app that must be browser-rendered, but is in fact static files — and several obvious-looking approaches are dead ends that this skill documents.
 ---
 
-<!-- skill: bian-extraction v14 | repo: changeset 061 -->
+<!-- skill: bian-extraction v15 | repo: changeset 062 -->
 
 # BIAN Service Landscape extraction
 
@@ -348,6 +348,18 @@ id here, so the object turns up in its own view's file; counting that as
 missing membership put ten false positives into a finding of twenty-eight.
 When a check excludes a population, carry the excluded count in the output —
 a filter that leaves no trace makes the number it produces uncheckable.
+
+**Check the side of a mapping that points at the model.** `objectReferences`
+is {diagram element id: object id}; counting unresolved KEYS reported 504 of
+549 on three consecutive runs, all correct arithmetic about the wrong side. The
+keys are a presentation namespace by design and can only ever be red — which
+teaches everyone to skip the finding. Guard the values instead.
+
+**Narrow an exclusion to what was measured.** `is refinement of` appears 6,860
+times and only 382 of its sources are views; excluding the verb wholesale would
+have suppressed thousands of unrelated pairs. Exclude the specific case
+observed — an edge whose source IS the view being checked — not the general
+shape it belongs to.
 
 ## Etiquette and legal
 
