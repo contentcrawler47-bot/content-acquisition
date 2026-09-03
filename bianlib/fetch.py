@@ -22,6 +22,36 @@ The breaker matters more than it looks. Without it a source that starts
 returning 503 receives 1,231 requests and five retries each before anyone
 notices, which is precisely the behaviour that gets a crawler blocked.
 
+There are TWO breakers, and they answer different questions.
+
+The REQUEST breaker (`CONSECUTIVE_FAILURE_LIMIT`) counts requests that
+exhausted every attempt. It is the right instrument for a source that is
+answering but refusing -- a run of 503s -- because each refusal is one request
+and the limit is reached in a bounded number of them.
+
+The TRANSPORT breaker (`TRANSPORT_FAILURE_LIMIT`) counts consecutive
+connection-level failures: timeouts, refused connections, resets, DNS. It
+exists because the request breaker cannot trip on an unreachable host inside a
+30-minute job. One request against a dead host costs up to three transport
+tries per attempt (keep-alive, reconnect, urllib), each bounded by the 90 s
+timeout, across four attempts: 3 x 90 s x 4 = 18 minutes for ONE request, so
+eight of them is ~144 minutes. The transport breaker counts the tries instead
+of the requests, so it trips after 8 x 90 s = 12 minutes at worst, plus the
+backoff sleeps between attempts, and in seconds when the failure is fast.
+
+Every transport try is recorded on the Response -- including the ones that
+were retried past. The first two tries per request used to be swallowed by a
+bare except and reconnected in silence, which is why a runner-region failure
+on 30 August 2026 could be diagnosed no further than "it timed out". Nothing
+here is discarded any more: a failure that is retried past is written down,
+and a request that gives up carries its attempt log on the exception.
+
+The Response carries the DECODED ENTITY BODY as bytes, alongside the text. The
+bytes are what a raw store keeps and digests; the declaration that the digest
+is over the decoded entity rather than the transfer encoding is recorded in
+the project's design documents, and `Content-Encoding` travels with the
+response headers so the decision is reversible in principle.
+
 Standard library only, in keeping with the rest of the repo.
 """
 
@@ -48,37 +78,82 @@ MAX_ATTEMPTS = 4
 MAX_BACKOFF = 60.0
 CONSECUTIVE_FAILURE_LIMIT = 8
 
+#: Consecutive transport-level failures (no HTTP response at all) before the
+#: transport breaker trips. Counted per TRY, not per request, and reset by any
+#: response the server sends -- a 503 is a response, so a refusing-but-
+#: reachable source is the request breaker's problem, not this one's.
+#:
+#: Worst case to trip: 8 tries x DEFAULT_TIMEOUT = 12 minutes, plus the
+#: backoff sleeps between attempts (at most 2 + 4 + 8 s within one request).
+#: That fits inside a 30-minute job with room to upload what was fetched.
+TRANSPORT_FAILURE_LIMIT = 8
+
 
 class SourceUnhappy(RuntimeError):
-    """Raised when the circuit breaker trips.
+    """Raised when a circuit breaker trips.
 
     Distinct from a single failed fetch: this means the source has failed
     repeatedly in a row and the right response is to stop, not to continue
-    with the remaining pages.
+    with the remaining pages. `attempts` carries the try log of the request
+    that tripped it.
     """
+
+    def __init__(self, message: str, attempts: list | None = None):
+        super().__init__(message)
+        self.attempts = list(attempts or [])
 
 
 class Response:
-    __slots__ = ("status", "text", "etag", "last_modified", "from_cache")
+    """One answer from the source.
+
+    `text` is what the parsers read. `body` is the same entity as bytes,
+    after transfer decoding (gzip) and before character decoding -- the form
+    a raw store keeps. `headers` are the response headers as received and
+    `request_headers` the ones actually sent, so a capture record can say
+    what was asked and what came back without a second copy of either.
+    `attempts` is every transport try this request made, in order, including
+    the ones that failed and were retried past.
+    """
+
+    __slots__ = ("status", "text", "etag", "last_modified", "from_cache",
+                 "body", "headers", "request_headers", "attempts")
 
     def __init__(self, status, text, etag="", last_modified="",
-                 from_cache=False):
+                 from_cache=False, body=b"", headers=None,
+                 request_headers=None, attempts=None):
         self.status = status
         self.text = text
         self.etag = etag
         self.last_modified = last_modified
         self.from_cache = from_cache
+        self.body = body
+        self.headers = dict(headers or {})
+        self.request_headers = dict(request_headers or {})
+        self.attempts = list(attempts or [])
 
 
-def _decode(raw: bytes, encoding: str) -> str:
+def _inflate(raw: bytes, encoding: str) -> bytes:
+    """The entity body: transfer-decoded, still bytes."""
     if (encoding or "").lower() == "gzip":
         try:
-            raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
+            return gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
         except OSError:
             # Some servers advertise gzip and send plain bytes. Treat the
             # header as advisory rather than failing the fetch.
-            pass
-    return raw.decode("utf-8", errors="replace")
+            return raw
+    return raw
+
+
+def _decode(raw: bytes, encoding: str) -> str:
+    return _inflate(raw, encoding).decode("utf-8", errors="replace")
+
+
+def _header(headers: dict, name: str) -> str:
+    """A response header by name, whichever case the server used."""
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value or ""
+    return ""
 
 
 class Fetcher:
@@ -93,7 +168,8 @@ class Fetcher:
                  timeout: int = DEFAULT_TIMEOUT,
                  max_attempts: int = MAX_ATTEMPTS,
                  validators: dict | None = None,
-                 failure_limit: int = CONSECUTIVE_FAILURE_LIMIT):
+                 failure_limit: int = CONSECUTIVE_FAILURE_LIMIT,
+                 transport_failure_limit: int = TRANSPORT_FAILURE_LIMIT):
         self.base = base.rstrip("/")
         parts = urllib.parse.urlsplit(self.base)
         self.host = parts.netloc
@@ -102,6 +178,7 @@ class Fetcher:
         self.timeout = timeout
         self.max_attempts = max(1, int(max_attempts))
         self.failure_limit = max(1, int(failure_limit))
+        self.transport_failure_limit = max(1, int(transport_failure_limit))
 
         #: {url: {"etag": ..., "last_modified": ...}} carried between runs so
         #: an unchanged page costs the source a 304 and no body.
@@ -110,12 +187,18 @@ class Fetcher:
         self._conn = None
         self._last_request = 0.0
         self._consecutive_failures = 0
+        self._consecutive_transport_failures = 0
 
         # Reported at the end of every chunk. Counts and bytes only — never
         # content: Actions logs on a public repo are world-readable.
+        #
+        # `transport_errors` counts every connection-level failure, including
+        # the ones a later try recovered from. Before it existed, a request
+        # that reconnected twice and then succeeded looked identical to one
+        # that succeeded first time.
         self.stats = {"requests": 0, "not_modified": 0, "retries": 0,
                       "bytes": 0, "waited": 0.0, "failures": 0,
-                      "reconnects": 0}
+                      "reconnects": 0, "transport_errors": 0}
 
     # -- connection ------------------------------------------------------
 
@@ -153,42 +236,82 @@ class Fetcher:
 
     # -- fetching --------------------------------------------------------
 
-    def _request_once(self, url: str, headers: dict):
-        """One attempt over the persistent connection, falling back to urllib.
+    def _transport_failed(self, record: dict, url: str, attempts: list):
+        """Record one connection-level failure and count it towards the
+        transport breaker. Raises if the breaker trips."""
+        self.stats["transport_errors"] += 1
+        self._consecutive_transport_failures += 1
+        print(f"    {record['error']} on {url.rsplit('/', 1)[-1]} "
+              f"via {record['transport']}", flush=True)
+        if self._consecutive_transport_failures >= self.transport_failure_limit:
+            raise SourceUnhappy(
+                f"{self._consecutive_transport_failures} consecutive transport "
+                f"failures (last: {record['error']}). The host is not "
+                f"answering at all; stopping rather than waiting out the "
+                f"timeout on every remaining page.", attempts)
+
+    def _request_once(self, url: str, headers: dict, attempt: int,
+                      attempts: list):
+        """One attempt: the persistent connection, then a reconnect, then
+        urllib. Every try is appended to `attempts` whether it succeeded or
+        not, so nothing that happened here is invisible afterwards.
 
         Returns (status, body_bytes, response_headers).
         """
         parts = urllib.parse.urlsplit(url)
         path = parts.path + (f"?{parts.query}" if parts.query else "")
+
+        def record(transport: str, status=None, error: str = "") -> dict:
+            entry = {"attempt": attempt, "transport": transport,
+                     "status": status, "error": error,
+                     "at": time.time()}
+            attempts.append(entry)
+            return entry
+
         if parts.netloc == self.host:
-            for attempt in (1, 2):
+            for n in (1, 2):
+                transport = "keep-alive" if n == 1 else "reconnect"
                 if self._conn is None:
                     self._conn = self._connect()
-                    if attempt == 2:
+                    if n == 2:
                         self.stats["reconnects"] += 1
                 try:
                     self._conn.request("GET", path, headers=headers)
                     resp = self._conn.getresponse()
                     body = resp.read()      # must drain to reuse the socket
+                    record(transport, status=resp.status)
+                    self._consecutive_transport_failures = 0
                     return resp.status, body, dict(resp.getheaders())
-                except (http.client.HTTPException, OSError):
+                except (http.client.HTTPException, OSError) as e:
                     self.close()
-                    if attempt == 2:
-                        break
+                    entry = record(transport, error=f"{type(e).__name__}: {e}")
+                    self._transport_failed(entry, url, attempts)
             # Persistent connection is not working; fall through to urllib.
 
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                return r.status, r.read(), dict(r.headers)
+                body = r.read()
+                record("urllib", status=r.status)
+                self._consecutive_transport_failures = 0
+                return r.status, body, dict(r.headers)
         except urllib.error.HTTPError as e:
+            # An HTTP error is a response: the host answered.
+            record("urllib", status=e.code)
+            self._consecutive_transport_failures = 0
             return e.code, e.read() or b"", dict(e.headers or {})
+        except Exception as e:                          # transport, not HTTP
+            entry = record("urllib", error=f"{type(e).__name__}: {e}")
+            self._transport_failed(entry, url, attempts)
+            raise
 
     def get(self, url: str, conditional: bool = True) -> Response:
         """Fetch one URL, politely. Raises on give-up; never returns None.
 
         A 304 comes back with `from_cache` set and an empty body, so callers
-        that keep their own copy can skip the work entirely.
+        that keep their own copy can skip the work entirely. A raised
+        exception carries `attempts`, the full try log, so a request that
+        gave up is as diagnosable as one that succeeded.
         """
         headers = {"User-Agent": UA,
                    "Accept-Encoding": "gzip",
@@ -200,11 +323,16 @@ class Fetcher:
             if known.get("last_modified"):
                 headers["If-Modified-Since"] = known["last_modified"]
 
+        attempts: list = []
         last_error = ""
         for attempt in range(1, self.max_attempts + 1):
             self._pace()
             try:
-                status, body, resp_headers = self._request_once(url, headers)
+                status, body, resp_headers = self._request_once(
+                    url, headers, attempt, attempts)
+            except SourceUnhappy:
+                self.stats["failures"] += 1
+                raise
             except Exception as e:                      # transport, not HTTP
                 last_error = f"{type(e).__name__}: {e}"
                 status, body, resp_headers = 0, b"", {}
@@ -217,31 +345,35 @@ class Fetcher:
                 self._consecutive_failures = 0
                 return Response(304, "", known.get("etag", "") if known else "",
                                 known.get("last_modified", "") if known else "",
-                                from_cache=True)
+                                from_cache=True, body=b"", headers=resp_headers,
+                                request_headers=headers, attempts=attempts)
 
             if 200 <= status < 300:
                 self._consecutive_failures = 0
-                etag = resp_headers.get("ETag") or resp_headers.get("etag") or ""
-                lm = (resp_headers.get("Last-Modified")
-                      or resp_headers.get("last-modified") or "")
+                etag = _header(resp_headers, "ETag")
+                lm = _header(resp_headers, "Last-Modified")
                 if etag or lm:
                     self.validators[url] = {"etag": etag, "last_modified": lm}
-                text = _decode(body, resp_headers.get("Content-Encoding")
-                               or resp_headers.get("content-encoding") or "")
-                return Response(status, text, etag, lm)
+                entity = _inflate(body, _header(resp_headers, "Content-Encoding"))
+                text = entity.decode("utf-8", errors="replace")
+                return Response(status, text, etag, lm, body=entity,
+                                headers=resp_headers, request_headers=headers,
+                                attempts=attempts)
 
             # 404 is a real answer, not a fault — shards and views legitimately
             # go missing between versions and the caller decides what that
-            # means. Retrying it would be pure noise.
+            # means. Retrying it would be pure noise. The body is kept: a 404
+            # page is still an artifact a raw store can record.
             if status == 404:
                 self._consecutive_failures = 0
-                return Response(404, "")
+                entity = _inflate(body, _header(resp_headers, "Content-Encoding"))
+                return Response(404, "", body=entity, headers=resp_headers,
+                                request_headers=headers, attempts=attempts)
 
             last_error = last_error or f"HTTP {status}"
             if attempt < self.max_attempts:
                 wait = self._retry_after(
-                    resp_headers.get("Retry-After")
-                    or resp_headers.get("retry-after") or "", attempt)
+                    _header(resp_headers, "Retry-After"), attempt)
                 self.stats["retries"] += 1
                 print(f"    {status or 'error'} on {url.rsplit('/', 1)[-1]} — "
                       f"waiting {wait:.0f}s (attempt {attempt}/"
@@ -254,8 +386,10 @@ class Fetcher:
             raise SourceUnhappy(
                 f"{self._consecutive_failures} consecutive failures "
                 f"(last: {last_error}). Stopping rather than continuing to "
-                f"request from a source that is refusing.")
-        raise urllib.error.URLError(last_error or "request failed")
+                f"request from a source that is refusing.", attempts)
+        err = urllib.error.URLError(last_error or "request failed")
+        err.attempts = attempts
+        raise err
 
     # -- reporting -------------------------------------------------------
 
@@ -263,7 +397,8 @@ class Fetcher:
         s = self.stats
         return (f"{s['requests']} requests, {s['not_modified']} not-modified, "
                 f"{s['bytes'] / 1024 / 1024:.1f} MB, {s['retries']} retries, "
-                f"{s['failures']} failures, {s['waited']:.0f}s paced")
+                f"{s['failures']} failures, {s['transport_errors']} transport "
+                f"errors, {s['waited']:.0f}s paced")
 
 
 def robots_disallows(fetcher: Fetcher, path: str) -> str:
