@@ -9,6 +9,7 @@ sources cannot break each other by being added or removed.
     python run.py validate bian             # CAN WE EXTRACT? (no Drive involved)
     python run.py harvest bian
     python run.py extract bian             # STAGE 1: store the model as data
+    python run.py acquire bian --mode full # retain raw artifacts + provenance
     python run.py publish bian [--dry-run]  # CAN WE PUBLISH? (Drive only)
     python run.py check-publish             # Drive credentials/reachability
     python run.py run bian [--publish]      # harvest + validate (+ publish)
@@ -38,6 +39,9 @@ OUT = REPO / "out"
 #: Stage 1 output. Separate from out/<id>/, which write_bundles empties
 #: on every harvest — an extract must not be destroyed by a render.
 EXTRACT_OUT = OUT / "_extract"
+#: Stage 2 output: out/_raw/<source>/<run-id>/. Run-addressed and never
+#: emptied by anything -- a run directory is refused if it already exists.
+RAW_OUT = OUT / "_raw"
 
 
 def discover() -> dict[str, Source]:
@@ -165,6 +169,77 @@ def cmd_extract(sources, args) -> int:
               file=sys.stderr)
         return 2
     return 0
+
+
+def acquisition_provenance() -> dict:
+    """Provenance for an acquisition run: `ci_run()` plus what it lacks.
+
+    The extract's `run` block is locked by its schema and stays as it is; the
+    acquisition record is new and can carry what a downloaded artifact has
+    always needed to name the code that made it -- the commit SHA and the
+    repo digest. The digest is COMPUTED over the checked-out tree by the
+    same function `tools/repo_manifest.py --verify` uses, and the manifest's
+    declared digest is recorded beside it, so a run on a dirty tree says so.
+    """
+    prov = ci_run()
+    prov["commit_sha"] = os.environ.get("GITHUB_SHA", "")
+    prov["ref"] = os.environ.get("GITHUB_REF_NAME", "")
+    prov["workflow_ref"] = os.environ.get("GITHUB_WORKFLOW_REF", "")
+    prov["runner_os"] = os.environ.get("RUNNER_OS", "")
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "repo_manifest", REPO / "tools" / "repo_manifest.py")
+        rm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rm)
+        prov["repo_digest"] = rm.digest_of(rm.build())
+        declared = rm.load()
+        prov["manifest_digest"] = rm.digest_of(declared) if declared else ""
+    except Exception as e:                                      # noqa: BLE001
+        prov["repo_digest"] = ""
+        prov["manifest_digest"] = ""
+        prov["repo_digest_error"] = f"{type(e).__name__}: {e}"
+    return prov
+
+
+def default_run_id() -> str:
+    """The CI run id and attempt, or a timestamp outside CI.
+
+    Deterministic from the environment so a workflow can name the same
+    directory this command will write, without the command telling it.
+    """
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if run_id:
+        return f"{run_id}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
+    from datetime import datetime, timezone
+    return "local-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def cmd_acquire(sources, args) -> int:
+    """Stage 2. Acquire and RETAIN the source's raw artifacts, with provenance.
+
+    Writes out/_raw/<source>/<run-id>/ and never touches Drive; archiving is a
+    separate step with its own credentials and its own failure. Refuses an
+    existing run directory: a run is never rewritten.
+    """
+    from bianlib import acquire as A
+    from bianlib.fetch import SourceUnhappy
+
+    s = sources[args.source]
+    if not getattr(s, "base", ""):
+        print(f"{s.id} has no `base` URL; acquisition is BIAN-shaped today.",
+              file=sys.stderr)
+        return 2
+    run_dir = RAW_OUT / s.id / (args.run_id or default_run_id())
+    print(f"Acquiring {s} -> {run_dir}  (mode {args.mode})", flush=True)
+    try:
+        run = A.acquire(s, run_dir, mode=args.mode,
+                        provenance=acquisition_provenance())
+    except FileExistsError as e:
+        print(f"\n  {e}", file=sys.stderr)
+        return 2
+    except SourceUnhappy:
+        return 3
+    return 0 if run["state"] == "complete" else 1
 
 
 def cmd_render(sources, args) -> int:
@@ -439,6 +514,16 @@ def main(argv=None) -> int:
                    help="record gate findings without failing on them. "
                         "Fetch, parse and schema findings still fail: you "
                         "cannot threshold your own denominator")
+    a = with_source(sub.add_parser(
+        "acquire", help="acquire and RETAIN raw artifacts with provenance "
+                        "(no Drive)"))
+    a.add_argument("--mode", choices=["model-only", "full"],
+                   default="model-only",
+                   help="model-only fetches the data files; full adds the "
+                        "declared view pages")
+    a.add_argument("--run-id", default=None, metavar="ID",
+                   help="run directory name; defaults to the CI run id and "
+                        "attempt, or a timestamp outside CI")
     rn = with_source(sub.add_parser(
         "render", help="STAGE 2: select from a stored extract (no network)"))
     rn.add_argument("--add-category", action="append", metavar="CATEGORY",
@@ -469,6 +554,7 @@ def main(argv=None) -> int:
     handler = {
         "list": cmd_list, "harvest": cmd_harvest, "validate": cmd_validate,
         "extract": cmd_extract, "render": cmd_render,
+        "acquire": cmd_acquire,
         "publish": cmd_publish, "run": cmd_run, "reindex": cmd_reindex,
         "check-publish": cmd_check_publish,
     }[args.cmd]

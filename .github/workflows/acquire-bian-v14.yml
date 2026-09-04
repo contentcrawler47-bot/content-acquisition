@@ -1,0 +1,92 @@
+name: Acquire — BIAN v14 (stage 2)
+
+# STAGE 2 only: acquire the landscape's raw artifacts and RETAIN them, with
+# provenance. Parses nothing beyond the index (to know what to fetch), renders
+# nothing, publishes nothing.
+#
+# References NO Google Drive secrets, so a red run here is always a source or
+# code problem. Archiving a run to Drive is a separate step with its own
+# credentials and its own failure, and it does not exist yet: this workflow
+# uploads the run as a CI artifact, which is enough to prove acquisition
+# works and to investigate what it fetched. When the archive step lands it
+# belongs in its own job, so the separation survives.
+#
+# What is fetched is DECLARED in bianlib/acquire.py (SCOPES) and recorded in
+# the run's run.json, with the counts stated separately: views KNOWN, views
+# DECLARED, views STORED. `model-only` takes the data files, about a minute.
+# `full` additionally fetches every declared view page -- several hundred
+# requests against someone else's web server, which is why this workflow is
+# dispatch-only and must stay so.
+#
+# A run is never rewritten. Its directory is named by the run id and attempt,
+# and the command refuses a directory that already exists.
+#
+# Reports counts, sizes, statuses and digests only, never acquired text:
+# Actions logs on a public repo are world-readable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Acquisition scope
+        type: choice
+        options:
+          - model-only
+          - full
+        default: model-only
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acquire-bian-v14
+  cancel-in-progress: true
+
+env:
+  SOURCE_ID: bian-v14
+  # The same directory `run.py acquire` derives from GITHUB_RUN_ID and
+  # GITHUB_RUN_ATTEMPT, so the check and upload steps can name it without
+  # the acquire step telling them.
+  RUN_DIR: out/_raw/bian-v14/${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  acquire:
+    name: Can we retain the BIAN landscape as raw artifacts?
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Acquisition is standard library only. requirements.txt is installed
+      # so the API source imports cleanly during discovery; without it that
+      # source is reported as a load failure, harmless here but
+      # indistinguishable in the log from a real one.
+      - name: Install the pinned source dependency
+        run: python3 -m pip install --require-hashes -r requirements.txt
+
+      - name: Acquire
+        run: |
+          python3 run.py acquire "$SOURCE_ID" --mode "${{ inputs.mode }}"
+
+      # Three questions: was it finished (sidecar present), is it intact
+      # (every digest verifies), is it whole (every declared artifact
+      # stored). --require-complete makes a partial run red: a red run here
+      # means something the source's own index declares was not fetched.
+      - name: Check the run
+        if: always()
+        run: |
+          python3 tools/check_raw.py "$RUN_DIR" --require-complete
+
+      # Kept whether or not the checks passed: a failed acquisition is the
+      # thing you most want to look at. `warn` rather than `error` when
+      # nothing was written, so a failed run emits one error, not two.
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: raw-${{ env.SOURCE_ID }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.RUN_DIR }}/
+          retention-days: 90
+          if-no-files-found: warn

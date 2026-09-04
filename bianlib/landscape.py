@@ -362,6 +362,39 @@ def is_wanted(category: str, name: str) -> bool:
     return category in INCLUDE_CATEGORIES and not is_structural(category, name)
 
 
+def fetch_texts(base: str, fetcher) -> dict:
+    """Fetch the model's data files from the live source, as texts.
+
+    The mapping is parsed here only to learn which shards to ask for; the
+    model itself is built by `Landscape.parse`. conditional=False throughout:
+    the model has to be materialised every run, so a 304 here would be an
+    empty body and nothing to parse.
+    """
+    mapping_text = fetcher.get(data_url(base, "all_objects_data_mapping.js"),
+                               conditional=False).text
+    try:
+        mapping = parse_js_assignment(mapping_text)
+    except Exception:
+        mapping = {}
+    numbers = shard_numbers(mapping)
+    print(f"  {len(numbers)} shards to fetch: {numbers[0]}-{numbers[-1]}",
+          flush=True)
+    shards: dict = {}
+    for n in numbers:
+        resp = fetcher.get(shard_url(base, n), conditional=False)
+        shards[n] = None if resp.status == 404 else resp.text
+
+    def optional(name: str) -> str:
+        try:
+            return fetcher.get(data_url(base, name), conditional=False).text
+        except Exception:
+            return ""
+
+    return {"mapping": mapping_text, "shards": shards,
+            "relations": optional("all_objects_relations.js"),
+            "on_views": optional("all_objects_on_views.js")}
+
+
 # --- the model -------------------------------------------------------------
 
 class Landscape:
@@ -395,30 +428,41 @@ class Landscape:
     # -- loading ------------------------------------------------------
 
     def load(self, fetcher) -> "Landscape":
-        # conditional=False throughout: the model has to be materialised
-        # every run, so a 304 here would be an empty body and nothing to parse.
-        mapping_text = fetcher.get(
-            data_url(self.base, "all_objects_data_mapping.js"),
-            conditional=False).text
+        """Fetch the model's data files and parse them.
+
+        Split into `fetch_texts` and `parse` so that the same parser reads a
+        stored acquisition run as reads the live source: stage 2 stores the
+        bytes and calls `parse` on them, and nothing here is duplicated there.
+        """
+        return self.parse(fetch_texts(self.base, fetcher))
+
+    def parse(self, texts: dict) -> "Landscape":
+        """Build the model from already-fetched texts.
+
+        `texts` is the shape `fetch_texts` returns: `mapping`, `relations` and
+        `on_views` are the file contents (or "" when the fetch failed), and
+        `shards` maps every REQUESTED shard number to its content, or to None
+        where the source answered 404. The requested set is the dict's keys,
+        so an extract built from these texts can still declare that it asked
+        for a shard the source did not have.
+        """
         try:
-            mapping = parse_js_assignment(mapping_text)
+            mapping = parse_js_assignment(texts.get("mapping") or "")
         except Exception:
             mapping = {}
-        self.shards = shard_numbers(mapping)
+        shards = texts.get("shards") or {}
+        self.shards = sorted(shards) if shards else shard_numbers(mapping)
         self.shard_results["requested"] = list(self.shards)
         self.shard_results["mapping_ids"] = [str(k) for k in mapping]
-        print(f"  {len(self.shards)} shards to fetch: "
-              f"{self.shards[0]}-{self.shards[-1]}", flush=True)
 
         missing = []
         for n in self.shards:
-            resp = fetcher.get(shard_url(self.base, n),
-                               conditional=False)
-            if resp.status == 404:
+            text = shards.get(n)
+            if text is None:
                 missing.append(n)
                 continue
             try:
-                data = parse_js_assignment(resp.text)
+                data = parse_js_assignment(text)
             except Exception as e:
                 self.notes.append(f"shard {n} unparseable ({type(e).__name__})")
                 continue
@@ -426,23 +470,19 @@ class Landscape:
             self.shard_results["read"].append(n)
             for oid, obj in data.items():
                 self.objects.setdefault(oid, obj)
-            print(f"  shard {n:<3} {len(resp.text) / 1024:>8.0f} KB  "
+            print(f"  shard {n:<3} {len(text) / 1024:>8.0f} KB  "
                   f"{len(data):>6} objects  "
                   f"(+{len(self.objects) - before} new)", flush=True)
         if missing:
             self.notes.append(f"shards absent: {', '.join(map(str, missing))}")
 
         try:
-            self.relations = parse_js_assignment(
-                fetcher.get(data_url(self.base, "all_objects_relations.js"),
-                            conditional=False).text)
+            self.relations = parse_js_assignment(texts.get("relations") or "")
         except Exception:
             self.relations = {}
 
         try:
-            variables = parse_js_assignments(
-                fetcher.get(data_url(self.base, "all_objects_on_views.js"),
-                            conditional=False).text)
+            variables = parse_js_assignments(texts.get("on_views") or "")
             self.on_views = variables.get("objectsOnViews", {})
             self.insite_views = variables.get("insiteViews", {})
         except Exception:

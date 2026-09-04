@@ -236,6 +236,14 @@ class Fetcher:
 
     # -- fetching --------------------------------------------------------
 
+    @staticmethod
+    def request_headers_template() -> dict:
+        """The headers every request starts from. Exposed so a capture
+        record can state the policy in force without a second copy of it."""
+        return {"User-Agent": UA,
+                "Accept-Encoding": "gzip",
+                "Connection": "keep-alive"}
+
     def _transport_failed(self, record: dict, url: str, attempts: list):
         """Record one connection-level failure and count it towards the
         transport breaker. Raises if the breaker trips."""
@@ -313,9 +321,7 @@ class Fetcher:
         exception carries `attempts`, the full try log, so a request that
         gave up is as diagnosable as one that succeeded.
         """
-        headers = {"User-Agent": UA,
-                   "Accept-Encoding": "gzip",
-                   "Connection": "keep-alive"}
+        headers = self.request_headers_template()
         known = self.validators.get(url) if conditional else None
         if known:
             if known.get("etag"):

@@ -21,6 +21,7 @@ sources/
 bianlib/                   BIAN extraction, shared across landscape versions
   fetch.py                 paced, backing-off, cache-aware HTTP
   landscape.py             the data model: shards, relations, views
+  acquire.py               STAGE 2 (pipeline): acquire and RETAIN raw artifacts
   extract.py               STAGE 1: the model as partitioned JSON-LD
   geometry.py              view geometry as nodes and edges
   select.py                STAGE 2: the allowlist, applied to an extract
@@ -32,6 +33,7 @@ tools/
   landscape.py             the chunked full-landscape harvest
   join_report.py           joins two finished bundles by item name
   check_plantuml.py        hands every diagram to PlantUML to verify it renders
+  check_raw.py             finished / intact / whole checks on an acquisition run
   repo_manifest.py         manifest generation and verification
   apply_changeset.py       applies a revision zip, verifying before commit
   landscape_census.py      landscape counts, with denominators stated
@@ -39,7 +41,7 @@ tools/
   publish_sample.py        the original small end-to-end proof
 docs/ADDING_A_SOURCE.md
 changesets/                upload target for revision zips
-.github/workflows/         fifteen; six scheduled — see The scheduled week
+.github/workflows/         sixteen; six scheduled — see The scheduled week
 ```
 
 ## Sources
@@ -93,14 +95,33 @@ python3 run.py validate <source>         CAN WE EXTRACT?  (never touches Drive)
 python3 run.py check-publish             CAN WE PUBLISH?  (never touches a source)
 python3 run.py harvest <source>          acquire -> out/<source>/
 python3 run.py extract <source>          STAGE 1: model -> out/_extract/<source>/
+python3 run.py acquire <source>          retain raw + provenance -> out/_raw/<source>/<run>/
 python3 run.py publish <source>          sync to gdrive:content/<source>/
 python3 run.py run <source> --publish    validate then publish
 python3 run.py reindex                   rebuild content/index.md
 
 python3 tools/join_report.py out/bian-v14 out/bian-apis-v14 --min-rate 99
 python3 tools/check_extract.py out/_extract/bian-v14
+python3 tools/check_raw.py out/_raw/bian-v14/<run-id> --require-complete
 python3 tools/repo_manifest.py --verify
 ```
+
+## Acquiring and retaining raw artifacts
+
+`acquire` is the first piece of the six-stage pipeline design: it fetches the
+source's artifacts and keeps the bytes, under `out/_raw/<source>/<run-id>/`,
+with a manifest and a run record that answer -- from the stored files alone --
+where each artifact came from, when, by what code (commit SHA and a repo digest
+computed over the checked-out tree), under what policy (robots, delays,
+timeouts, the request headers actually sent), and against which declaration of
+what should have been fetched. Every transport try is recorded, including the
+ones retried past. A run directory is never rewritten; a second attempt is a
+second run. `RAW.sha256` is written last and is the completeness marker:
+`tools/check_raw.py` refuses a run without one.
+
+The "stage 1 / stage 2" labels on `extract` and `render` below predate that
+design, where `extract` is stage 3 and `render` is stages 4-5; they are kept
+until those commands are reshaped.
 
 ## Extraction in two stages
 
@@ -191,11 +212,11 @@ of the runs that just happened. Reindex was once at 04:30 and a source was
 added after it, which would have written a week-stale date every week.
 **Adding or rescheduling a source means checking reindex is still last.**
 
-The remaining nine workflows are on-demand: **Verify repo contents**, **Apply
+The remaining ten workflows are on-demand: **Verify repo contents**, **Apply
 changeset**, **Package skills**, **Check publishing target (Google Drive)**,
-**Census — BIAN landscape counts**, **Extract — BIAN v14 (stage 1)**,
-**Render — BIAN v14 (stage 2)**, **Publish sample to Drive** and
-**Sample — Savings Account diagrams**.
+**Census — BIAN landscape counts**, **Acquire — BIAN v14 (stage 2)**,
+**Extract — BIAN v14 (stage 1)**, **Render — BIAN v14 (stage 2)**,
+**Publish sample to Drive** and **Sample — Savings Account diagrams**.
 
 **No probe workflows remain.** Each was written to answer a specific question
 before a design was committed to, and each was deleted once its findings were
