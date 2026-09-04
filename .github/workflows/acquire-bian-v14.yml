@@ -11,10 +11,14 @@ name: Acquire — BIAN v14 (stage 2)
 # travels between them as the CI artifact, which is also what you download
 # to investigate what was fetched.
 #
-# The archive is gzipped at rest (~10x), verified against Drive's own hashes
-# after the copy, and never rewritten: a remote run folder that already holds
-# anything is refused. A run whose acquire job did not finish (no RAW.sha256)
-# is refused too -- it is not evidence and is not archived.
+# The archive is five uploads: run.json, manifest.json and RAW.sha256 plain,
+# payload.zip holding every payload file as a member (~10x smaller than
+# decoded), and ARCHIVED.json written last after the copy has been verified
+# against Drive's own hashes. Per-file uploads were tried first and Drive's
+# API pacing turned 723 files into an hour; one zip takes seconds. A folder
+# carrying the marker is never touched again; a folder without it is an
+# interrupted copy and is resumed. A run whose acquire job did not finish (no
+# RAW.sha256) is refused -- it is not evidence and is not archived.
 #
 # What is fetched is DECLARED in bianlib/acquire.py (SCOPES) and recorded in
 # the run's run.json, with the counts stated separately: views KNOWN, views
@@ -151,7 +155,7 @@ jobs:
         if: failure()
         run: |
           echo "A red ARCHIVE is a Drive problem or a guard; the acquire job touched no Drive."
-          echo "  exit 2: refused -- the remote run folder already holds a run, or the run never finished"
+          echo "  exit 2: refused -- the remote folder already carries ARCHIVED.json, is a first-layout folder, or the run never finished"
           echo "  missing credentials -> GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_TOKEN"
           echo "  rejected credentials -> the OAuth token expired; re-run 'rclone config', update GDRIVE_TOKEN"
           echo "Run 'Check raw archive target' to test the Drive half alone."

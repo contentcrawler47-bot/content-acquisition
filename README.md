@@ -13,7 +13,7 @@ core/
   checks.py                generic validation + report runner
   diagnostics.py           connectivity probing with error classification
   publish.py               uniform, per-source-scoped Drive sync
-  archive.py               rclone copy of a raw run to raw/<id>/<run>/; never rewrites
+  archive.py               rclone copy of a raw run to raw/<id>/<run>/ as one zip; marker last
   cli.py                   source discovery and commands
 sources/
   _template/               copy this to add a source
@@ -124,13 +124,15 @@ second run. `RAW.sha256` is written last and is the completeness marker:
 
 The Acquire workflow's second job archives the run to Drive under
 `raw/<source>/<run-id>/` — a sibling of `content/`, which publishing can never
-reach. Payload files are gzipped at rest (a full run is ~188 MB decoded, ~18 MB
-stored); `run.json`, `manifest.json` and `RAW.sha256` stay plain, and the
+reach. Five uploads: `run.json`, `manifest.json` and `RAW.sha256` plain,
+`payload.zip` holding every payload file as a member under its path (a full
+run is ~188 MB decoded, ~19 MB stored), and `ARCHIVED.json` written last, only
+after `rclone check` has confirmed every file against Drive's own hashes. The
 recorded digests are of the decoded bytes, so `check_raw.py` verifies a
-downloaded archive exactly as it verifies a run on disk. The copy is verified
-against Drive's own hashes afterwards. A remote run folder that already holds
-anything is refused: a run is written once, and a second attempt is a second
-run id. The archive job prints the Drive quota every time it runs.
+downloaded archive exactly as it verifies a run on disk, reading members
+straight from the zip. A folder carrying the marker is never touched again; a
+folder without one is an interrupted copy and is resumed. The archive job
+prints the Drive quota every time it runs.
 
 The "stage 1 / stage 2" labels on `extract` and `render` below predate that
 design, where `extract` is stage 3 and `render` is stages 4-5; they are kept

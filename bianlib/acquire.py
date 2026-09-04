@@ -53,6 +53,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import zipfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +70,12 @@ ACQUIRER_VERSION = "1"
 RUN_FILE = "run.json"
 MANIFEST_FILE = "manifest.json"
 SIDECAR_FILE = "RAW.sha256"
+#: The archive form (core/archive.py): every payload file as one zip member
+#: under its run-relative path, plus a completion marker written last. A run
+#: directory on disk never contains either; an archive always does.
+PAYLOAD_FILE = "payload.zip"
+MARKER_FILE = "ARCHIVED.json"
+ARCHIVE_ONLY = (PAYLOAD_FILE, MARKER_FILE)
 
 MODES = ("model-only", "full")
 
@@ -460,22 +467,56 @@ def read_sidecar(run_dir: Path) -> dict:
     return out
 
 
-def read_stored(run_dir: Path, rel: str) -> bytes | None:
-    """The decoded bytes of a stored file, from either form the run can take.
+class _Store:
+    """Reads a run in whichever form it is in, opening the payload zip once.
 
-    A run on disk holds `rel` as written. An archived run holds `rel + ".gz"`
-    for every payload file (see core/archive.py). The digests in RAW.sha256
-    and manifest.json are of the decoded bytes in both cases, so this is the
-    one place the two forms are reconciled. Returns None when neither exists.
+    Three forms exist. A run directory as written holds `rel` plain. An
+    archive (layout 2, core/archive.py) holds payload files as members of
+    payload.zip under the same `rel`. The single archive made under layout 1
+    (changeset 068) holds `rel + ".gz"` per file. The digests in RAW.sha256
+    and manifest.json are of the decoded bytes in every case, so this is the
+    one place the forms are reconciled and nothing above it needs to know.
     """
-    plain = run_dir / rel
-    if plain.is_file():
-        return plain.read_bytes()
-    packed = run_dir / (rel + ".gz")
-    if packed.is_file():
-        with gzip.open(packed, "rb") as fh:
-            return fh.read()
-    return None
+
+    def __init__(self, run_dir: Path):
+        self.run_dir = run_dir
+        self._zip = None
+        self._members: set[str] = set()
+        zip_path = run_dir / PAYLOAD_FILE
+        if zip_path.is_file():
+            self._zip = zipfile.ZipFile(zip_path)
+            self._members = set(self._zip.namelist())
+
+    @property
+    def members(self) -> set[str]:
+        return set(self._members)
+
+    def read(self, rel: str) -> bytes | None:
+        plain = self.run_dir / rel
+        if plain.is_file():
+            return plain.read_bytes()
+        if self._zip is not None and rel in self._members:
+            return self._zip.read(rel)
+        packed = self.run_dir / (rel + ".gz")
+        if packed.is_file():
+            with gzip.open(packed, "rb") as fh:
+                return fh.read()
+        return None
+
+    def close(self) -> None:
+        if self._zip is not None:
+            self._zip.close()
+            self._zip = None
+
+
+def read_stored(run_dir: Path, rel: str) -> bytes | None:
+    """The decoded bytes of one stored file, from any form the run can take.
+    Opens the payload zip per call; for many reads use `_Store` directly."""
+    store = _Store(run_dir)
+    try:
+        return store.read(rel)
+    finally:
+        store.close()
 
 
 def verify_run(run_dir: Path) -> dict:
@@ -498,35 +539,46 @@ def verify_run(run_dir: Path) -> dict:
         return result
     result["sidecar"] = True
     result["files_listed"] = len(listed)
-    for rel, digest in listed.items():
-        data = read_stored(run_dir, rel)
-        if data is None:
-            result["files_absent"].append(rel)
-        elif _sha256(data) != digest:
-            result["files_mismatched"].append(rel)
-        else:
-            result["files_verified"] += 1
-            if not (run_dir / rel).is_file():
-                result["files_compressed"] += 1
-    for p in run_dir.rglob("*"):
-        if p.is_file() and p.name != SIDECAR_FILE:
-            rel = str(p.relative_to(run_dir)).replace("\\", "/")
-            plain_rel = rel[:-3] if rel.endswith(".gz") else rel
-            if rel not in listed and plain_rel not in listed:
-                result["files_stray"].append(rel)
-
-    manifest_path = run_dir / MANIFEST_FILE
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        for r in manifest.get("artifacts", []):
-            if r.get("outcome") != "stored":
-                continue
-            result["artifacts_stored"] += 1
-            data = read_stored(run_dir, r["path"])
-            if data is not None and _sha256(data) == r["sha256"]:
-                result["artifacts_verified"] += 1
+    store = _Store(run_dir)
+    try:
+        for rel, digest in listed.items():
+            data = store.read(rel)
+            if data is None:
+                result["files_absent"].append(rel)
+            elif _sha256(data) != digest:
+                result["files_mismatched"].append(rel)
             else:
-                result["artifacts_mismatched"].append(r["path"])
+                result["files_verified"] += 1
+                if not (run_dir / rel).is_file():
+                    result["files_compressed"] += 1
+        # Strays: on disk, anything not listed and not an archive file; in
+        # the zip, any member not listed.
+        for p in run_dir.rglob("*"):
+            if p.is_file() and p.name != SIDECAR_FILE:
+                rel = str(p.relative_to(run_dir)).replace("\\", "/")
+                if rel in ARCHIVE_ONLY and len(p.relative_to(run_dir).parts) == 1:
+                    continue
+                plain_rel = rel[:-3] if rel.endswith(".gz") else rel
+                if rel not in listed and plain_rel not in listed:
+                    result["files_stray"].append(rel)
+        for member in sorted(store.members):
+            if member not in listed:
+                result["files_stray"].append(f"{PAYLOAD_FILE}:{member}")
+
+        manifest_path = run_dir / MANIFEST_FILE
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for r in manifest.get("artifacts", []):
+                if r.get("outcome") != "stored":
+                    continue
+                result["artifacts_stored"] += 1
+                data = store.read(r["path"])
+                if data is not None and _sha256(data) == r["sha256"]:
+                    result["artifacts_verified"] += 1
+                else:
+                    result["artifacts_mismatched"].append(r["path"])
+    finally:
+        store.close()
 
     result["ok"] = (not result["files_absent"] and not result["files_mismatched"]
                     and not result["files_stray"]

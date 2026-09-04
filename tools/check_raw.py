@@ -75,7 +75,7 @@ def main() -> int:
     v = A.verify_run(run_dir)
     print(f"  INTACT     {v['files_verified']} of {v['files_listed']} listed "
           f"files verified"
-          + (f" ({v['files_compressed']} read through gzip -- archive form)"
+          + (f" ({v['files_compressed']} read from the archive form)"
              if v["files_compressed"] else "")
           + f"; {v['artifacts_verified']} of {v['artifacts_stored']} stored "
           f"artifacts match their manifest digest")
