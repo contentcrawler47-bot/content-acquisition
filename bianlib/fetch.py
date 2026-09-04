@@ -10,7 +10,9 @@ Everything here exists to keep that demand modest and well-behaved:
     one at a time     no concurrency anywhere; the workflow also pins itself to
                       a single runner, so there is never a second client
     keep-alive        one TLS handshake per chunk instead of one per page
-    gzip              the shards are ~55 MB uncompressed and ~8 MB compressed
+    gzip              a full run is ~188 MB decoded and ~18 MB on the wire;
+                      the 47 shards alone are ~149 MB decoded, the largest
+                      16.6 MB (measured 2026-09-04, run 33834704432)
     conditional GET   an ETag from the previous run turns an unchanged page
                       into a 304 with no body at all
     backoff           429 and 5xx are honoured, Retry-After included, rather

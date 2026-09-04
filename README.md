@@ -13,6 +13,7 @@ core/
   checks.py                generic validation + report runner
   diagnostics.py           connectivity probing with error classification
   publish.py               uniform, per-source-scoped Drive sync
+  archive.py               rclone copy of a raw run to raw/<id>/<run>/; never rewrites
   cli.py                   source discovery and commands
 sources/
   _template/               copy this to add a source
@@ -41,7 +42,7 @@ tools/
   publish_sample.py        the original small end-to-end proof
 docs/ADDING_A_SOURCE.md
 changesets/                upload target for revision zips
-.github/workflows/         sixteen; six scheduled — see The scheduled week
+.github/workflows/         seventeen; six scheduled — see The scheduled week
 ```
 
 ## Sources
@@ -96,6 +97,8 @@ python3 run.py check-publish             CAN WE PUBLISH?  (never touches a sourc
 python3 run.py harvest <source>          acquire -> out/<source>/
 python3 run.py extract <source>          STAGE 1: model -> out/_extract/<source>/
 python3 run.py acquire <source>          retain raw + provenance -> out/_raw/<source>/<run>/
+python3 run.py archive <source> --run-id X   copy that run to Drive raw/<source>/X/, gzipped, once
+python3 run.py check-raw-target          Drive credentials + raw/ root + quota, no source
 python3 run.py publish <source>          sync to gdrive:content/<source>/
 python3 run.py run <source> --publish    validate then publish
 python3 run.py reindex                   rebuild content/index.md
@@ -118,6 +121,16 @@ what should have been fetched. Every transport try is recorded, including the
 ones retried past. A run directory is never rewritten; a second attempt is a
 second run. `RAW.sha256` is written last and is the completeness marker:
 `tools/check_raw.py` refuses a run without one.
+
+The Acquire workflow's second job archives the run to Drive under
+`raw/<source>/<run-id>/` — a sibling of `content/`, which publishing can never
+reach. Payload files are gzipped at rest (a full run is ~188 MB decoded, ~18 MB
+stored); `run.json`, `manifest.json` and `RAW.sha256` stay plain, and the
+recorded digests are of the decoded bytes, so `check_raw.py` verifies a
+downloaded archive exactly as it verifies a run on disk. The copy is verified
+against Drive's own hashes afterwards. A remote run folder that already holds
+anything is refused: a run is written once, and a second attempt is a second
+run id. The archive job prints the Drive quota every time it runs.
 
 The "stage 1 / stage 2" labels on `extract` and `render` below predate that
 design, where `extract` is stage 3 and `render` is stages 4-5; they are kept
@@ -212,11 +225,12 @@ of the runs that just happened. Reindex was once at 04:30 and a source was
 added after it, which would have written a week-stale date every week.
 **Adding or rescheduling a source means checking reindex is still last.**
 
-The remaining ten workflows are on-demand: **Verify repo contents**, **Apply
+The remaining eleven workflows are on-demand: **Verify repo contents**, **Apply
 changeset**, **Package skills**, **Check publishing target (Google Drive)**,
-**Census — BIAN landscape counts**, **Acquire — BIAN v14 (stage 2)**,
-**Extract — BIAN v14 (stage 1)**, **Render — BIAN v14 (stage 2)**,
-**Publish sample to Drive** and **Sample — Savings Account diagrams**.
+**Check raw archive target (Google Drive)**, **Census — BIAN landscape
+counts**, **Acquire — BIAN v14 (stage 2)**, **Extract — BIAN v14 (stage 1)**,
+**Render — BIAN v14 (stage 2)**, **Publish sample to Drive** and **Sample —
+Savings Account diagrams**.
 
 **No probe workflows remain.** Each was written to answer a specific question
 before a design was committed to, and each was deleted once its findings were

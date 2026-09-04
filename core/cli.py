@@ -10,6 +10,7 @@ sources cannot break each other by being added or removed.
     python run.py harvest bian
     python run.py extract bian             # STAGE 1: store the model as data
     python run.py acquire bian --mode full # retain raw artifacts + provenance
+    python run.py archive bian --run-id X  # copy that run to Drive, immutably
     python run.py publish bian [--dry-run]  # CAN WE PUBLISH? (Drive only)
     python run.py check-publish             # Drive credentials/reachability
     python run.py run bian [--publish]      # harvest + validate (+ publish)
@@ -240,6 +241,55 @@ def cmd_acquire(sources, args) -> int:
     except SourceUnhappy:
         return 3
     return 0 if run["state"] == "complete" else 1
+
+
+def cmd_check_raw_target(_sources, _args) -> int:
+    """Validate the RAW-ARCHIVE half only: credentials, rclone, the raw root.
+
+    Separate from `check-publish` as `check-publish` is from `validate`, so
+    a red archive is never mistaken for a red acquisition. Prints the Drive
+    quota, which a retention decision needs and no other check records.
+    """
+    from . import archive as archive_mod
+    print("\n=== Raw archive target validation (Google Drive) ===\n", flush=True)
+    lines = archive_mod.check_target()
+    for ok, msg in lines:
+        print(f"  [{'PASS' if ok else 'FAIL'}] {msg}", flush=True)
+    if all(ok for ok, _ in lines):
+        print("\n  RESULT: raw archive target is healthy.", flush=True)
+        return 0
+    print("\n  This is an ARCHIVE problem, not a source problem. Acquisition "
+          "itself references no Drive credentials.", flush=True)
+    return 1
+
+
+def cmd_archive(sources, args) -> int:
+    """Archive one acquisition run to Drive, immutably, and verify it landed.
+
+    Exit 0 archived and verified; 2 refused (unfinished run, run that does
+    not verify locally, or a remote folder that already holds a run); 1 any
+    other archive failure. A refusal is not a fault -- it is the guard doing
+    its job -- but it is still red, because the run was not archived.
+    """
+    from . import archive as archive_mod
+    s = sources[args.source]
+    run_dir = RAW_OUT / s.id / args.run_id
+    print(f"Archiving {run_dir} -> Drive"
+          + ("  [dry run]" if args.dry_run else ""), flush=True)
+    try:
+        summary = archive_mod.archive(run_dir, s.id, dry_run=args.dry_run)
+    except archive_mod.ArchiveError as e:
+        msg = str(e)
+        print(f"\n  {msg}", file=sys.stderr)
+        refused = ("never finished" in msg or "does not verify" in msg
+                   or "already holds" in msg)
+        return 2 if refused else 1
+    except Exception as e:                                      # noqa: BLE001
+        print(f"\n  {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    print(f"\n  archived {summary['run_id']} to {summary['destination']}"
+          + ("  (dry run)" if summary.get("dry_run") else ""), flush=True)
+    return 0
 
 
 def cmd_render(sources, args) -> int:
@@ -541,6 +591,14 @@ def main(argv=None) -> int:
                    help="per-probe timeout in seconds")
     sub.add_parser("check-publish",
                    help="check Drive credentials and reachability only")
+    sub.add_parser("check-raw-target",
+                   help="check Drive credentials and the raw archive root only")
+    ar = with_source(sub.add_parser(
+        "archive", help="copy a finished acquisition run to Drive, immutably"))
+    ar.add_argument("--run-id", required=True, metavar="ID",
+                    help="the run directory name under out/_raw/<source>/")
+    ar.add_argument("--dry-run", action="store_true",
+                    help="stage and report, copy nothing")
     p = with_source(sub.add_parser("publish", help="sync to Drive"))
     p.add_argument("--dry-run", action="store_true")
     r = with_source(sub.add_parser("run", help="harvest + validate [+ publish]"))
@@ -557,6 +615,7 @@ def main(argv=None) -> int:
         "acquire": cmd_acquire,
         "publish": cmd_publish, "run": cmd_run, "reindex": cmd_reindex,
         "check-publish": cmd_check_publish,
+        "check-raw-target": cmd_check_raw_target, "archive": cmd_archive,
     }[args.cmd]
 
     try:

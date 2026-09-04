@@ -50,6 +50,7 @@ Standard library only.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import time
@@ -459,16 +460,37 @@ def read_sidecar(run_dir: Path) -> dict:
     return out
 
 
+def read_stored(run_dir: Path, rel: str) -> bytes | None:
+    """The decoded bytes of a stored file, from either form the run can take.
+
+    A run on disk holds `rel` as written. An archived run holds `rel + ".gz"`
+    for every payload file (see core/archive.py). The digests in RAW.sha256
+    and manifest.json are of the decoded bytes in both cases, so this is the
+    one place the two forms are reconciled. Returns None when neither exists.
+    """
+    plain = run_dir / rel
+    if plain.is_file():
+        return plain.read_bytes()
+    packed = run_dir / (rel + ".gz")
+    if packed.is_file():
+        with gzip.open(packed, "rb") as fh:
+            return fh.read()
+    return None
+
+
 def verify_run(run_dir: Path) -> dict:
     """Re-verify a stored run against its sidecar and manifest.
 
     Returns counts with denominators. `ok` is True only when a sidecar
-    exists, every file it names is present with the recorded digest, no file
-    is present that it does not name, and every artifact the manifest says
-    was stored is on disk with the manifest's digest.
+    exists, every file it names is present -- plain or gzipped -- with the
+    recorded digest of its decoded bytes, no file is present that it does
+    not name, and every artifact the manifest says was stored is on disk
+    with the manifest's digest. `files_compressed` says how many were read
+    through gzip, so a check on an archive can be told from one on a run.
     """
     result = {"ok": False, "sidecar": False, "files_listed": 0,
-              "files_verified": 0, "files_mismatched": [], "files_absent": [],
+              "files_verified": 0, "files_compressed": 0,
+              "files_mismatched": [], "files_absent": [],
               "files_stray": [], "artifacts_stored": 0,
               "artifacts_verified": 0, "artifacts_mismatched": []}
     listed = read_sidecar(run_dir)
@@ -477,17 +499,20 @@ def verify_run(run_dir: Path) -> dict:
     result["sidecar"] = True
     result["files_listed"] = len(listed)
     for rel, digest in listed.items():
-        p = run_dir / rel
-        if not p.is_file():
+        data = read_stored(run_dir, rel)
+        if data is None:
             result["files_absent"].append(rel)
-        elif _sha256(p.read_bytes()) != digest:
+        elif _sha256(data) != digest:
             result["files_mismatched"].append(rel)
         else:
             result["files_verified"] += 1
+            if not (run_dir / rel).is_file():
+                result["files_compressed"] += 1
     for p in run_dir.rglob("*"):
         if p.is_file() and p.name != SIDECAR_FILE:
             rel = str(p.relative_to(run_dir)).replace("\\", "/")
-            if rel not in listed:
+            plain_rel = rel[:-3] if rel.endswith(".gz") else rel
+            if rel not in listed and plain_rel not in listed:
                 result["files_stray"].append(rel)
 
     manifest_path = run_dir / MANIFEST_FILE
@@ -497,8 +522,8 @@ def verify_run(run_dir: Path) -> dict:
             if r.get("outcome") != "stored":
                 continue
             result["artifacts_stored"] += 1
-            p = run_dir / r["path"]
-            if p.is_file() and _sha256(p.read_bytes()) == r["sha256"]:
+            data = read_stored(run_dir, r["path"])
+            if data is not None and _sha256(data) == r["sha256"]:
                 result["artifacts_verified"] += 1
             else:
                 result["artifacts_mismatched"].append(r["path"])

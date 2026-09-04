@@ -74,9 +74,11 @@ def main() -> int:
     # -- INTACT -----------------------------------------------------------
     v = A.verify_run(run_dir)
     print(f"  INTACT     {v['files_verified']} of {v['files_listed']} listed "
-          f"files verified; {v['artifacts_verified']} of "
-          f"{v['artifacts_stored']} stored artifacts match their manifest "
-          f"digest")
+          f"files verified"
+          + (f" ({v['files_compressed']} read through gzip -- archive form)"
+             if v["files_compressed"] else "")
+          + f"; {v['artifacts_verified']} of {v['artifacts_stored']} stored "
+          f"artifacts match their manifest digest")
     for rel in v["files_absent"]:
         failures.append(f"listed in sidecar but absent: {rel}")
     for rel in v["files_mismatched"]:

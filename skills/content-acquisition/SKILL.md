@@ -3,7 +3,7 @@ name: content-acquisition
 description: Operate the content-acquisition project — a GitHub Actions and Google Drive pipeline that harvests reference content from external sources, renders it to markdown and PlantUML, and publishes it privately for Claude to read. Use this skill whenever the user mentions content-acquisition, changesets, the harvest or publish workflows, adding a content source, repo digests or MANIFEST.sha256, or asks to change anything in that repo. Also use it when they mention BIAN together with harvesting, publishing or automation, or when a GitHub Actions log from this project is shared. Critically, changes to this repo must be delivered as verified changeset zips, never as loose files to paste — so consult this skill before proposing any modification to it.
 ---
 
-<!-- skill: content-acquisition v5 | repo: changeset 065 -->
+<!-- skill: content-acquisition v6 | repo: changeset 068 -->
 
 # content-acquisition
 
@@ -66,6 +66,16 @@ as the task requires: `PROJECT-DESIGN.md` (rationale), `DECISION-LOG.md`
 digest history), `METHOD.md` (working method for a new source),
 `GATE-DESIGN.md` (why the source input gate exists and how it is built),
 `BIAN-EXTRACTION-REFERENCE.md`.
+
+**Retained raw runs.** `raw/<source-id>/<run-id>/` on Drive, a sibling of
+`content/`, written only by rclone from the **Acquire** workflow's archive
+job: `run.json`, `manifest.json` and `RAW.sha256` plain, every payload file
+gzipped. Read them with the connector when a question is about what the source
+served on a given day; the digests in `RAW.sha256` are of the decoded bytes.
+Never create anything under `raw/` by hand: rclone runs with the `drive.file`
+scope and cannot see files it did not create, so a hand-made folder is
+invisible to it and the archive will build its own beside it. A run folder is
+never rewritten; a second attempt is a second run id.
 
 Never assert a digest, an expiry, or what is outstanding from memory — **and do
 not infer the current state from your own last action either.** Having handed
@@ -280,7 +290,11 @@ Extraction and publishing are deliberately separated, so the failing workflow
 halves the search before you read anything: a red **Validate** is a source
 problem and uses no Drive credentials; a red **Check publishing target** is a
 Drive problem and touches no source; a red **Join** means neither source is
-broken, so check the matching before the sources.
+broken, so check the matching before the sources. In **Acquire**, a red
+`acquire` job is a source or code problem and referenced no Drive secrets; a
+red `archive` job is a Drive problem or a guard refusing (exit 2: the remote
+run folder already holds a run, or the run never finished) and touched no
+source. **Check raw archive target** tests the Drive half alone.
 
 Within a chunked landscape run, read which *job* failed — `plan` made no page
 requests at all, `chunk N` localises it to one slice, `assemble` means nothing

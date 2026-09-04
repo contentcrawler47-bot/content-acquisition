@@ -4,12 +4,17 @@ name: Acquire — BIAN v14 (stage 2)
 # provenance. Parses nothing beyond the index (to know what to fetch), renders
 # nothing, publishes nothing.
 #
-# References NO Google Drive secrets, so a red run here is always a source or
-# code problem. Archiving a run to Drive is a separate step with its own
-# credentials and its own failure, and it does not exist yet: this workflow
-# uploads the run as a CI artifact, which is enough to prove acquisition
-# works and to investigate what it fetched. When the archive step lands it
-# belongs in its own job, so the separation survives.
+# Two JOBS, deliberately. `acquire` references NO Google Drive secrets, so a
+# red acquire is always a source or code problem. `archive` copies the run
+# to Drive under raw/<source>/<run-id>/ with its own credentials and its own
+# failure; a red archive is a Drive problem and touched no source. The run
+# travels between them as the CI artifact, which is also what you download
+# to investigate what was fetched.
+#
+# The archive is gzipped at rest (~10x), verified against Drive's own hashes
+# after the copy, and never rewritten: a remote run folder that already holds
+# anything is refused. A run whose acquire job did not finish (no RAW.sha256)
+# is refused too -- it is not evidence and is not archived.
 #
 # What is fetched is DECLARED in bianlib/acquire.py (SCOPES) and recorded in
 # the run's run.json, with the counts stated separately: views KNOWN, views
@@ -34,6 +39,10 @@ on:
           - model-only
           - full
         default: model-only
+      archive:
+        description: Archive the run to Drive after acquiring
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -44,6 +53,10 @@ concurrency:
 
 env:
   SOURCE_ID: bian-v14
+  RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  # NOT named RCLONE_VERSION: rclone maps RCLONE_<FLAG> env vars onto its
+  # own flags, so RCLONE_VERSION is read as --version and every call dies.
+  RC_VERSION: "1.71.1"
   # The same directory `run.py acquire` derives from GITHUB_RUN_ID and
   # GITHUB_RUN_ATTEMPT, so the check and upload steps can name it without
   # the acquire step telling them.
@@ -86,7 +99,59 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: raw-${{ env.SOURCE_ID }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}
           path: ${{ env.RUN_DIR }}/
           retention-days: 90
           if-no-files-found: warn
+
+  archive:
+    name: Can we archive the run to Drive, immutably?
+    needs: acquire
+    # Runs after a red acquire too: a partial or failed run is still a record
+    # worth keeping, and `archive` refuses on its own if the run never
+    # finished. Skipped only when the operator asked not to archive.
+    if: ${{ always() && inputs.archive && needs.acquire.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install rclone (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          base="https://github.com/rclone/rclone/releases/download/v${RC_VERSION}"
+          pkg="rclone-v${RC_VERSION}-linux-amd64.zip"
+          curl -fsSLO "${base}/${pkg}"
+          curl -fsSLO "${base}/SHA256SUMS"
+          grep " ${pkg}\$" SHA256SUMS | sha256sum -c -
+          unzip -q "${pkg}"
+          sudo install -m 755 "rclone-v${RC_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+
+      - name: Fetch the run from the acquire job
+        uses: actions/download-artifact@v7
+        with:
+          name: raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}
+          path: ${{ env.RUN_DIR }}
+
+      # Exit 0 archived and verified; 2 refused by a guard (already holds a
+      # run, unfinished, or fails its own local check); 1 anything else.
+      - name: Archive
+        env:
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: |
+          python3 run.py archive "$SOURCE_ID" --run-id "$RUN_ID"
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "A red ARCHIVE is a Drive problem or a guard; the acquire job touched no Drive."
+          echo "  exit 2: refused -- the remote run folder already holds a run, or the run never finished"
+          echo "  missing credentials -> GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_TOKEN"
+          echo "  rejected credentials -> the OAuth token expired; re-run 'rclone config', update GDRIVE_TOKEN"
+          echo "Run 'Check raw archive target' to test the Drive half alone."
