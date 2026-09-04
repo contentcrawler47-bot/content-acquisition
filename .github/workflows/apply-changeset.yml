@@ -29,6 +29,9 @@ name: Apply changeset
 #   with 'workflow' scope as the CHANGESET_TOKEN secret; otherwise the push
 #   is rejected by GitHub with a permissions error.
 
+# TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
+# pull_request_target -- the Actions cache is private only while no fork
+# PR can run a workflow in this repo (D-14).
 on:
   workflow_dispatch:
     inputs:
@@ -55,10 +58,17 @@ concurrency:
 jobs:
   apply:
     name: Apply and verify a changeset
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # A PAT is needed only when the changeset touches workflow files.
           # Falls back to GITHUB_TOKEN, which covers everything else.

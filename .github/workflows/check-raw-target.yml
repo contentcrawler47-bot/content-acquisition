@@ -8,6 +8,9 @@ name: Check raw archive target (Google Drive)
 # Prints the Drive quota, which retention decisions need and nothing else
 # records.
 
+# TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
+# pull_request_target -- the Actions cache is private only while no fork
+# PR can run a workflow in this repo (D-14).
 on:
   workflow_dispatch:
 
@@ -27,10 +30,20 @@ env:
 jobs:
   check-raw-target:
     name: Can we archive raw runs to Drive?
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Drive credentials live in this Environment (A.3/D-11); a job
+    # without it cannot see them.
+    environment: drive
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 

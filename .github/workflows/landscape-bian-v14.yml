@@ -33,6 +33,9 @@ name: Landscape — BIAN v14 (full, chunked)
 # Logs report counts and pass/fail only, never acquired text: Actions logs on a
 # public repo are world-readable.
 
+# TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
+# pull_request_target -- the Actions cache is private only while no fork
+# PR can run a workflow in this repo (D-14).
 on:
   schedule:
     - cron: "0 3 * * 1"        # 03:00 UTC Mon = 15:00 NZST / 16:00 NZDT
@@ -83,13 +86,20 @@ jobs:
   # ---------------------------------------------------------------- plan
   plan:
     name: Read the model and plan the chunks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
       indexes: ${{ steps.plan.outputs.indexes }}
       views: ${{ steps.plan.outputs.views }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
@@ -117,7 +127,7 @@ jobs:
           echo "::error title=PLAN failed::Could not read the v14 model, or the view classification does not match the landscape. Drive was never contacted."
           echo "No view pages were requested. Read the MODEL and VIEW CLASSIFICATION blocks above."
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: parts-plan
           path: ${{ env.PARTS }}
@@ -128,7 +138,7 @@ jobs:
     name: Chunk ${{ matrix.index }}
     needs: plan
     if: ${{ !inputs.plan_only }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       # One at a time, and stop everything at the first chunk that fails its
@@ -140,11 +150,18 @@ jobs:
       matrix:
         index: ${{ fromJSON(needs.plan.outputs.indexes) }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: parts-plan
           path: ${{ env.PARTS }}
@@ -152,7 +169,7 @@ jobs:
       # Pages seen on a previous run: an unchanged view then answers 304 with
       # no body. A miss is harmless — everything is simply fetched in full.
       - name: Restore the page cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ env.CACHE }}
           key: landscape-bian-v14-pages-${{ github.run_id }}
@@ -160,7 +177,7 @@ jobs:
 
       # Cached across every job in the run, so the jar is fetched once.
       - name: Restore PlantUML
-        uses: actions/cache@v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: plantuml.jar
           key: plantuml-${{ env.PLANTUML_VERSION }}
@@ -212,7 +229,7 @@ jobs:
         if: always()
         run: printf 'PART=%02d\n' "${{ matrix.index }}" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: parts-chunk-${{ env.PART }}
@@ -225,16 +242,26 @@ jobs:
     name: Verify the landscape and publish
     needs: [plan, chunk]
     if: ${{ !inputs.plan_only }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Drive credentials live in this Environment (A.3/D-11); a job
+    # without it cannot see them.
+    environment: drive
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # NOT merge-multiple: every chunk artifact holds a file called
       # items.json, so merging them into one directory would have each chunk
       # overwrite the last. They come down as siblings and are put back into
       # the layout the pipeline wrote.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: parts-*
           path: ${{ env.PARTS }}/incoming
@@ -257,7 +284,7 @@ jobs:
 
       # Cached across every job in the run, so the jar is fetched once.
       - name: Restore PlantUML
-        uses: actions/cache@v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: plantuml.jar
           key: plantuml-${{ env.PLANTUML_VERSION }}
@@ -325,7 +352,7 @@ jobs:
       # half-harvested landscape.
       - name: Save the page cache
         if: success()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ env.CACHE }}
           key: landscape-bian-v14-pages-${{ github.run_id }}

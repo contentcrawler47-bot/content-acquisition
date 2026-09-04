@@ -14,6 +14,8 @@ already halves the search.
 | **Validate — \<source\>** | Source problem. Uses no Drive credentials. |
 | **Check publishing target** | Drive problem. Touches no source. |
 | **Source — \<source\>** | Read which step failed; extraction runs first. |
+| **Acquire — \<source\>** | Two jobs. A red `acquire` referenced no Drive secrets, so it is a source or code problem. A red `archive` touched no source: a Drive problem, or a guard refusing with exit 2 — the remote folder already carries `ARCHIVED.json`, it is a first-layout per-file folder, or the run never finished. |
+| **Check raw archive target** | The Drive half alone. Lists every run folder with its state. |
 
 Within extraction, validation is staged — Connectivity, Payload, Parse,
 Extract, Render — and stops at the first failure. **Ask for the failing stage

@@ -49,12 +49,13 @@ the map, not the inventory.
 | `tools/landscape.py` | The chunked full-landscape harvest |
 | `tools/join_report.py` | Joins two finished bundles by item name |
 | `tools/check_plantuml.py` | Hands every diagram to PlantUML |
+| `tools/check_workflows.py` | Workflow conformance — pins, permissions, triggers, artifact paths |
 | `tools/repo_manifest.py` | Manifest generation and verification |
 | `tools/apply_changeset.py` | Applies a revision zip, verifying before commit |
 | `tools/landscape_census.py` | Landscape counts, each with its denominator |
 | `tools/view_to_plantuml.py`, `tools/publish_sample.py` | Diagnostics and samples |
 | `core/__init__.py`, `sources/__init__.py`, `sources/*/__init__.py`, `bianlib/__init__.py` | Empty package markers — required |
-| `.github/workflows/` | Fifteen workflows; see **The scheduled week** in the README |
+| `.github/workflows/` | The workflows; see **The scheduled week** in the README |
 | `MANIFEST.sha256` | The shipped state, checked by **Verify repo contents** |
 | `changesets/` | Upload target for revision zips |
 | `.gitignore`, `README.md`, `SETUP.md`, `docs/ADDING_A_SOURCE.md` | |
@@ -274,17 +275,33 @@ to read `content/index.md` first, then the relevant source's `index.md`.
   shared Drive account and its rate limits — and confirm reindex is still last.
 - **Schedule expiry.** GitHub disables scheduled workflows after 60 days of
   repo inactivity; the keep-alive step commits a timestamp under `.runs/`.
-- **Nothing acquired is exposed by CI.** No artifacts are uploaded, no acquired
-  text is logged, and `out/` is gitignored. Logs are public because the repo is
-  public — when adding diagnostics, print counts, hashes and classifications,
-  never harvested text.
-- **Hardening.** `permissions: contents: write` only, for the timestamp commit;
-  reindex is `contents: read`. rclone is pinned and checksum-verified rather
-  than piped into a root shell. `actions/checkout` is the only third-party
-  action — pin it with
-  `gh api repos/actions/checkout/git/ref/tags/v5 --jq .object.sha`. Never add a
-  `pull_request_target` trigger: unlike `pull_request` it runs with full access
-  to secrets.
+- **Acquired text is never logged**, and `out/` is gitignored. Logs are public
+  because the repo is public — when adding diagnostics, print counts, hashes
+  and classifications, never harvested text.
+- **Artifacts are as public as logs**, and three of them currently carry
+  payload bytes: the run directory uploaded by **Acquire** and by **Extract**,
+  and the extract itself. Anyone with a GitHub account can download them. This
+  is known and scheduled: 072 replaces artifact transport with the Actions
+  cache, which has no public read path. Until then, do not add to it —
+  `check_workflows.py` refuses any new Class-B artifact and lists the three
+  exceptions by name.
+- **Hardening.** Workflow-level `permissions:` everywhere, minimal;
+  `contents: write` only in **Apply changeset** and in the landscape
+  keep-alive commit. Every third-party action is pinned to a full commit SHA
+  with a `# vX.Y.Z` comment, and the runner image is pinned too; a tag can be
+  force-pushed, a SHA cannot. rclone and actionlint are pinned and
+  checksum-verified rather than piped into a root shell. Drive secrets live in
+  the `drive` GitHub Environment, so a job that talks to a source cannot see
+  them. Every job starts with harden-runner in audit mode, which records
+  outbound connections. Never add a `pull_request` or `pull_request_target`
+  trigger: the second runs with full access to secrets, and both would let a
+  fork's code reach the Actions cache.
+- **These are checked, not merely intended.** `tools/check_workflows.py` runs
+  in **Verify repo contents** and again on the tree a changeset would produce,
+  so a change that unpins an action or adds a `pull_request` trigger is
+  refused before it is written. Where it permits an exception it names the
+  changeset that removes it, and a stale exception is itself a failure. Read
+  that file for the current rules rather than this paragraph.
 - **Licensing.** Sources are acquired without authentication where possible,
   but that is not a licence to redistribute. This keeps a private working copy
   and publishes nothing. Check each source's terms.

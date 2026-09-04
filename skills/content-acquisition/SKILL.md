@@ -3,7 +3,7 @@ name: content-acquisition
 description: Operate the content-acquisition project — a GitHub Actions and Google Drive pipeline that harvests reference content from external sources, renders it to markdown and PlantUML, and publishes it privately for Claude to read. Use this skill whenever the user mentions content-acquisition, changesets, the harvest or publish workflows, adding a content source, repo digests or MANIFEST.sha256, or asks to change anything in that repo. Also use it when they mention BIAN together with harvesting, publishing or automation, or when a GitHub Actions log from this project is shared. Critically, changes to this repo must be delivered as verified changeset zips, never as loose files to paste — so consult this skill before proposing any modification to it.
 ---
 
-<!-- skill: content-acquisition v7 | repo: changeset 069 -->
+<!-- skill: content-acquisition v8 | repo: changeset 071 -->
 
 # content-acquisition
 
@@ -65,7 +65,9 @@ as the task requires: `PROJECT-DESIGN.md` (rationale), `DECISION-LOG.md`
 (rejected alternatives), `REFERENCE-DATA.md` (verified counts, thresholds,
 digest history), `METHOD.md` (working method for a new source),
 `GATE-DESIGN.md` (why the source input gate exists and how it is built),
-`BIAN-EXTRACTION-REFERENCE.md`.
+`DESIGN-OBSERVABILITY.md` (what the pipeline records about its own execution,
+where it goes and who reads it; its `-EXTERNAL` companion is a deferred
+option, not a plan), `BIAN-EXTRACTION-REFERENCE.md`.
 
 **Retained raw runs.** `raw/<source-id>/<run-id>/` on Drive, a sibling of
 `content/`, written only by rclone from the **Acquire** workflow's archive
@@ -80,6 +82,13 @@ scope and cannot see files it did not create. Deleting a folder rclone made is
 safe. A folder with the marker is never rewritten; one without it is an
 interrupted copy that the next archive of the same run resumes.
 
+**For what CI exposes, read the workflows, not `SETUP.md`.** `SETUP.md` said
+no artifacts were uploaded while three workflows uploaded harvested content;
+it had been true when written. `grep -rn "upload-artifact" -A6
+.github/workflows/` answers it in one command, and `tools/check_workflows.py`
+answers it as a pass or fail. This is "read the artefact rather than the
+description" in the one place where the description is most reassuring.
+
 Never assert a digest, an expiry, or what is outstanding from memory — **and do
 not infer the current state from your own last action either.** Having handed
 over a changeset is not the same as it having been applied; a digest was once
@@ -92,6 +101,13 @@ never write "confirmed" for a check you did not run.
 
 Filenames repeat across snapshots, so a title search can return a superseded
 copy; check which folder a file came from.
+
+**Two access paths, and the question chooses.** The Drive connector reads any
+single file into context but sees no Actions runs and no logs; the sandbox
+reads the repo — the tarball, or any commit SHA — and PyPI, but cannot reach
+Drive and cannot use the Actions API without rate-limiting. A one-file answer
+goes through the connector. A whole-population answer goes through the
+sandbox, and a population that lives on Drive has to be uploaded first.
 
 For anything touching bian.org, use the `bian-extraction` skill.
 
@@ -350,6 +366,10 @@ overwrite, so nothing is edited in place.
 - **Before deleting a document as redundant, name what only it contains.**
   "Overlapping" is not "duplicated".
 
+**Copy Drive ids exactly** — file ids, and folder ids in `parentId`. One
+dropped character cost a 48 KB document a second emission; the price of a
+typo is the size of the file, not the size of the mistake.
+
 **Writing costs what is emitted, not where it goes.** The sandbox cannot reach
 Drive — egress is allowlisted to GitHub, npm, PyPI and Ubuntu — so there is no
 path from disk to Drive that avoids re-emitting every byte. Write once,
@@ -380,6 +400,12 @@ life. Full procedure in `docs/ADDING_A_SOURCE.md` in the repo, and
 
 Logs are public, so print counts, hashes and classifications — never harvested
 text.
+
+**And artifacts are as public as logs.** Anything a workflow uploads with
+`upload-artifact` can be downloaded by any GitHub account, because the repo is
+public. Never upload payload bytes or extracted text; pass data between jobs
+through the Actions cache with an exact key, which has no public read path.
+`check_workflows.py` enforces this and names the exceptions that remain.
 
 ## Reference files
 

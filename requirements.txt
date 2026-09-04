@@ -9,7 +9,9 @@
 # substituted artefact fails the install step rather than running. Install with
 # --require-hashes, which refuses any unpinned transitive dependency.
 #
-# Only sources needing it install this; every other workflow stays stdlib-only.
+# Also used by tools/check_workflows.py, which must parse workflow YAML to
+# check it. Installed by the source's two workflows, by Verify repo contents
+# and by Apply changeset; every other workflow stays standard library only.
 pyyaml==6.0.2 \
     --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 \
     --hash=sha256:d584d9ec91ad65861cc08d42e834324ef890a082e591037abe114850ff7bbc3e

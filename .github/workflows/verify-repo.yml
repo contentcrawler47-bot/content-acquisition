@@ -10,6 +10,9 @@ name: Verify repo contents
 # The output is designed to be pasted back for review: the digest line alone
 # identifies the exact repo state.
 
+# TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
+# pull_request_target -- the Actions cache is private only while no fork
+# PR can run a workflow in this repo (D-14).
 on:
   workflow_dispatch:
     inputs:
@@ -28,10 +31,17 @@ concurrency:
 jobs:
   verify:
     name: Does the repo match the shipped version?
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
@@ -46,6 +56,35 @@ jobs:
       - name: Repo fingerprint
         if: always()
         run: python3 tools/repo_manifest.py --print
+
+      # The manifest proves the files are the shipped ones. These two prove
+      # the workflows are still conformant, which the manifest cannot see:
+      # a hash matches just as well for a workflow that unpinned an action.
+      - name: Install the pinned YAML parser (hash verified)
+        if: always()
+        run: python3 -m pip install --require-hashes -r requirements.txt
+
+      - name: Workflow conformance
+        if: always()
+        run: python3 tools/check_workflows.py
+
+      - name: Install actionlint (pinned, checksum verified)
+        if: always()
+        env:
+          AL_VERSION: 1.7.12
+        run: |
+          base="https://github.com/rhysd/actionlint/releases/download/v${AL_VERSION}"
+          pkg="actionlint_${AL_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "${base}/${pkg}"
+          curl -fsSLO "${base}/actionlint_${AL_VERSION}_checksums.txt"
+          grep " ${pkg}\$" "actionlint_${AL_VERSION}_checksums.txt" | sha256sum -c -
+          tar xzf "${pkg}" actionlint
+          sudo install -m 755 actionlint /usr/local/bin/actionlint
+          rm -f "${pkg}" "actionlint_${AL_VERSION}_checksums.txt" actionlint
+
+      - name: Lint the workflows
+        if: always()
+        run: actionlint -no-color .github/workflows/*.yml
 
       - name: Directory structure
         if: always()
@@ -68,3 +107,9 @@ jobs:
           echo "                      you added deliberately"
           echo "  WHITESPACE ONLY  -> harmless; the web editor changed line"
           echo "                      endings but the content is correct"
+          echo
+          echo "If the manifest passed and a later step failed, the files are"
+          echo "the shipped ones but a workflow is no longer conformant:"
+          echo "  NOT CONFORMANT   -> tools/check_workflows.py names the clause"
+          echo "                      and the workflow; fix it in a changeset"
+          echo "  actionlint       -> a YAML or expression error in a workflow"

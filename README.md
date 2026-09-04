@@ -35,6 +35,7 @@ tools/
   join_report.py           joins two finished bundles by item name
   check_plantuml.py        hands every diagram to PlantUML to verify it renders
   check_raw.py             finished / intact / whole checks on an acquisition run
+  check_workflows.py       workflow conformance: pins, permissions, triggers
   repo_manifest.py         manifest generation and verification
   apply_changeset.py       applies a revision zip, verifying before commit
   landscape_census.py      landscape counts, with denominators stated
@@ -286,8 +287,10 @@ onboarding a new source verifiable rather than hopeful.
 Python standard library only, with one exception: `sources/bian-apis-v14`
 reads YAML, which the standard library cannot parse. `requirements.txt` pins
 that parser to a version and its hashes, installed with `--require-hashes` so
-no unpinned transitive dependency can appear. Only that source's two workflows
-install it; every other workflow runs on the standard library alone.
+no unpinned transitive dependency can appear. `tools/check_workflows.py` uses
+the same parser to read the workflow files it checks. Four workflows install
+it — that source's two, **Verify repo contents** and **Apply changeset** —
+and every other workflow runs on the standard library alone.
 
 ## How sources stay independent
 

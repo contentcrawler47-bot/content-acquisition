@@ -28,6 +28,9 @@ name: Render — BIAN v14 (stage 2)
 # fetching: if there is no stored extract it fails and says so. Fetching is
 # `source: fresh`, chosen deliberately, and the log names which happened.
 
+# TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
+# pull_request_target -- the Actions cache is private only while no fork
+# PR can run a workflow in this repo (D-14).
 on:
   workflow_dispatch:
     inputs:
@@ -73,16 +76,23 @@ env:
 jobs:
   render:
     name: What would we publish from the stored model?
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
       # Pinned for the same reason as the Extract workflow:
       # requirements-extract.txt hashes a wheel built per interpreter version.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
@@ -123,7 +133,7 @@ jobs:
       # should pin one version.
       - name: Take the extract from that run
         if: inputs.source == 'stored'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: extract-bian-v14
           path: out/_extract/bian-v14

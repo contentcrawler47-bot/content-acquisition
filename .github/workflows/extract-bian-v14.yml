@@ -36,6 +36,9 @@ name: Extract — BIAN v14 (stage 3)
 # Reports counts, sizes and digests only, never acquired text: Actions logs on
 # a public repo are world-readable.
 
+# TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
+# pull_request_target -- the Actions cache is private only while no fork
+# PR can run a workflow in this repo (D-14).
 on:
   workflow_dispatch:
     inputs:
@@ -109,10 +112,17 @@ env:
 jobs:
   extract:
     name: Can we retain the BIAN landscape and store its model as data?
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
@@ -120,7 +130,7 @@ jobs:
       # (rpds-py) built per interpreter version. Taking whatever Python the
       # runner image ships would mean an image bump silently selecting a wheel
       # with no matching hash.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
@@ -178,7 +188,7 @@ jobs:
       # several questions that resisted reasoning about them.
       - name: Upload the extract
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: extract-${{ env.SOURCE_ID }}
           path: out/_extract/${{ env.SOURCE_ID }}/
@@ -191,7 +201,7 @@ jobs:
       # job, with its own credentials.
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}
           path: ${{ env.RUN_DIR }}/

@@ -1,15 +1,18 @@
 name: Acquire — BIAN v14 (stage 2)
 
 # STAGE 2 only: acquire the landscape's raw artifacts and RETAIN them, with
-# provenance. Parses nothing beyond the index (to know what to fetch), renders
-# nothing, publishes nothing.
+# provenance. Renders nothing, publishes nothing. It parses the index, to know
+# what to fetch, and since R8 it also DECLARES a gate scope -- the twelve
+# view_<id>_data.js files the source input gate samples -- so the gate can run
+# later against the retained run instead of reaching the network itself.
 #
 # Two JOBS, deliberately. `acquire` references NO Google Drive secrets, so a
 # red acquire is always a source or code problem. `archive` copies the run
 # to Drive under raw/<source>/<run-id>/ with its own credentials and its own
-# failure; a red archive is a Drive problem and touched no source. The run
-# travels between them as the CI artifact, which is also what you download
-# to investigate what was fetched.
+# failure; a red archive is a Drive problem and touched no source. Drive
+# credentials come from the `drive` Environment, so the acquire job cannot see
+# them at all. The run travels between the jobs as a CI artifact -- which is
+# PUBLIC, like the logs, and is replaced by the Actions cache at 072.
 #
 # The archive is five uploads: run.json, manifest.json and RAW.sha256 plain,
 # payload.zip holding every payload file as a member (~10x smaller than
@@ -33,6 +36,9 @@ name: Acquire — BIAN v14 (stage 2)
 # Reports counts, sizes, statuses and digests only, never acquired text:
 # Actions logs on a public repo are world-readable.
 
+# TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
+# pull_request_target -- the Actions cache is private only while no fork
+# PR can run a workflow in this repo (D-14).
 on:
   workflow_dispatch:
     inputs:
@@ -69,10 +75,17 @@ env:
 jobs:
   acquire:
     name: Can we retain the BIAN landscape as raw artifacts?
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
@@ -101,7 +114,7 @@ jobs:
       # nothing was written, so a failed run emits one error, not two.
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}
           path: ${{ env.RUN_DIR }}/
@@ -115,10 +128,20 @@ jobs:
     # worth keeping, and `archive` refuses on its own if the run never
     # finished. Skipped only when the operator asked not to archive.
     if: ${{ always() && inputs.archive && needs.acquire.result != 'cancelled' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Drive credentials live in this Environment (A.3/D-11); a job
+    # without it cannot see them.
+    environment: drive
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
@@ -134,7 +157,7 @@ jobs:
           sudo install -m 755 "rclone-v${RC_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
 
       - name: Fetch the run from the acquire job
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}
           path: ${{ env.RUN_DIR }}

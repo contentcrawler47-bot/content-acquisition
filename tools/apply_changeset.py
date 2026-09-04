@@ -35,6 +35,14 @@ Verification runs BEFORE any commit. If the resulting tree does not match
 MANIFEST.sha256 the changes are left uncommitted and the run fails, so a bad
 changeset cannot land.
 
+Workflow conformance runs BEFORE anything is written, on the workflow set the
+changeset WOULD produce rather than the one on disk — checking the repo as it
+stands would pass a changeset whose unpinned action is still inside the zip.
+A changeset that unpins an action, adds a `pull_request` trigger or uploads
+harvested bytes as an artifact is therefore refused at `--dry-run`. When the
+changeset updates `tools/check_workflows.py` itself, the shipped copy does the
+checking, so a rule added in a changeset applies to that same changeset.
+
     python3 tools/apply_changeset.py changesets/pending.zip [--dry-run]
 
 `skill_impact` is REQUIRED. It declares what this change teaches, so a repo
@@ -117,6 +125,71 @@ def skill_version(name: str) -> str:
         return "(no SKILL.md)"
     m = SKILL_MARKER.search(f.read_text(encoding="utf-8", errors="replace"))
     return f"v{m.group(2)}" if m else "(unversioned)"
+
+
+WORKFLOWS = ".github/workflows"
+
+
+def check_workflows_after(planned, workdir: Path) -> bool:
+    """Run tools/check_workflows.py over the workflow set this changeset would
+    leave behind: the repo's current files, with the changeset's additions,
+    updates, renames and deletions applied in a temp directory.
+
+    Returns True when conformant or when there is nothing to check. A
+    changeset that unpins an action or adds a `pull_request` trigger is
+    therefore refused at dry-run, before a single file is written.
+    """
+    checker = REPO / "tools" / "check_workflows.py"
+    if not checker.exists():
+        return True                       # predates 071; nothing to enforce
+
+    staged = workdir / "_workflow_check"
+    if staged.exists():
+        shutil.rmtree(staged)
+    staged.mkdir(parents=True)
+
+    src = REPO / WORKFLOWS
+    if src.is_dir():
+        for f in src.iterdir():
+            if f.is_file():
+                shutil.copyfile(f, staged / f.name)
+
+    touched = False
+    for kind, a, b, target, source in planned:
+        for rel in (a, b):
+            if rel and str(rel).startswith(WORKFLOWS + "/"):
+                touched = True
+        if kind == "delete" and str(a).startswith(WORKFLOWS + "/"):
+            (staged / Path(a).name).unlink(missing_ok=True)
+        elif kind == "rename":
+            if str(a).startswith(WORKFLOWS + "/"):
+                (staged / Path(a).name).unlink(missing_ok=True)
+            if b and str(b).startswith(WORKFLOWS + "/"):
+                shutil.copyfile(target, staged / Path(b).name)
+        elif str(a).startswith(WORKFLOWS + "/"):
+            shutil.copyfile(source, staged / Path(a).name)
+
+    # The checker itself may be what this changeset updates; run the version
+    # the changeset ships, not the one on disk, or a rule added in the same
+    # changeset would not apply to it.
+    for kind, a, _b, _t, source in planned:
+        if a == "tools/check_workflows.py" and kind in ("add", "update"):
+            checker = source
+            touched = True
+            break
+
+    if not touched:
+        shutil.rmtree(staged, ignore_errors=True)
+        return True
+
+    print("\n" + "=" * 70, flush=True)
+    print("  WORKFLOW CONFORMANCE of the resulting tree", flush=True)
+    print("=" * 70, flush=True)
+    rc = subprocess.run(
+        [sys.executable, str(checker), "--dir", str(staged)],
+        cwd=REPO).returncode
+    shutil.rmtree(staged, ignore_errors=True)
+    return rc == 0
 
 
 def fail(msg: str) -> int:
@@ -389,6 +462,17 @@ def main() -> int:
               "a PAT", flush=True)
         print("  with 'workflow' scope in CHANGESET_TOKEN, or the push will be "
               "rejected.", flush=True)
+
+    # ---- workflow conformance, on the tree this WOULD produce -------
+    # Checking the repo as it stands would pass a changeset that unpins an
+    # action, because the unpinning is in the zip and not yet on disk. So
+    # compose the post-application set of workflow files in a temp directory
+    # and check that. Nothing is written to the repo either way, which is
+    # what lets this run in a dry run and refuse before any damage.
+    if not check_workflows_after(planned, workdir):
+        shutil.rmtree(workdir, ignore_errors=True)
+        return fail("the workflows this changeset would produce are not "
+                    "conformant; nothing was changed")
 
     # ---- reconcile: the manifest is the whole target ----------------
     # Verify only warns about a file the manifest does not list. Here it is an

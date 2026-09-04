@@ -45,6 +45,15 @@ order is rejected up front rather than surfacing later as missing files.
 `MANIFEST.sha256`, nothing is committed and the run fails. A bad changeset
 cannot land.
 
+**Workflow conformance is checked before anything is written**, on the
+workflow set the changeset would produce rather than the one on disk — so a
+changeset that unpins an action, adds a `pull_request` trigger, drops a job
+timeout or uploads harvested bytes as an artifact is refused at `--dry-run`.
+`tools/check_workflows.py` names the clause and the workflow. It also fails on
+a *stale exception*: a rule it was told to permit for something that no longer
+exists. When a changeset updates the checker itself, the shipped copy does the
+checking, so a rule added in a changeset applies to that changeset.
+
 **Valid ops are `add`, `update`, `delete`, `rename`** — nothing else. Anything
 unrecognised is a hard problem.
 
