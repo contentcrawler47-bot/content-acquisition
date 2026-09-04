@@ -23,7 +23,7 @@ bianlib/                   BIAN extraction, shared across landscape versions
   fetch.py                 paced, backing-off, cache-aware HTTP
   landscape.py             the data model: shards, relations, views
   acquire.py               STAGE 2 (pipeline): acquire and RETAIN raw artifacts
-  extract.py               STAGE 1: the model as partitioned JSON-LD
+  extract.py               STAGE 3 (pipeline): a retained run as partitioned JSON-LD
   geometry.py              view geometry as nodes and edges
   select.py                STAGE 2: the allowlist, applied to an extract
   views.py                 view-page SVG geometry -> PlantUML
@@ -95,7 +95,7 @@ python3 run.py list                      configured sources and their secrets
 python3 run.py validate <source>         CAN WE EXTRACT?  (never touches Drive)
 python3 run.py check-publish             CAN WE PUBLISH?  (never touches a source)
 python3 run.py harvest <source>          acquire -> out/<source>/
-python3 run.py extract <source>          STAGE 1: model -> out/_extract/<source>/
+python3 run.py extract <source> --run-dir D   STAGE 3: parse run D -> out/_extract/<source>/ (never fetches)
 python3 run.py acquire <source>          retain raw + provenance -> out/_raw/<source>/<run>/
 python3 run.py archive <source> --run-id X   copy that run to Drive raw/<source>/X/, gzipped, once
 python3 run.py check-raw-target          Drive credentials + raw/ root + quota, no source
@@ -134,17 +134,28 @@ straight from the zip. A folder carrying the marker is never touched again; a
 folder without one is an interrupted copy and is resumed. The archive job
 prints the Drive quota every time it runs.
 
-The "stage 1 / stage 2" labels on `extract` and `render` below predate that
-design, where `extract` is stage 3 and `render` is stages 4-5; they are kept
-until those commands are reshaped.
+Three scopes are declared in `bianlib/acquire.py` (`SCOPES`): the model
+files, the gate's twelve-file sample of per-view data, and -- in `full` mode --
+the view pages whose arrangement carries meaning. `extract` is stage 3 of that
+design and reads a run through `acquire._Store`, so a run on disk and an
+archive downloaded from Drive are read alike, and every artifact consumed is
+verified against the manifest's digest on the way in. The "stage 2" label on
+`render` predates the design, where it is stages 4-5; it is kept until that
+command is reshaped.
 
 ## Extraction in two stages
 
 `harvest` acquires and renders in one pass, which means a renderer change or a
 change to the category allowlist both cost another full pass over the source.
-`extract` is the first half of splitting those apart: it stores the source's
-model as JSON-LD in `out/_extract/<source>/` and applies no selection and no
-rendering at all.
+`extract` is the first half of splitting those apart: it parses a retained
+acquisition run into JSON-LD under `out/_extract/<source>/` and applies no
+selection and no rendering at all. It never fetches: the Extract workflow
+acquires first and extracts from the run it just wrote, and the same command
+re-normalises an archived run offline. The extract's `run` block names the run
+it was built from (`raw_run_id`, `raw_run_state`) and the code that acquired
+it (`commit_sha`, `repo_digest`); `check_extract.py` fails an extract that does
+not say. Run `33848524733-1`, downloaded from Drive and re-extracted, reproduces
+the content digest four live runs had produced.
 
 Storing the model unfiltered is the point. Selection belongs to the render
 stage, so adding a category to `INCLUDE_CATEGORIES` becomes a re-render against
@@ -183,9 +194,10 @@ Schema validation needs `jsonschema`, pinned in `requirements-extract.txt` and
 installed only by the extract workflow. When it is absent the structural check
 reports SKIP and names itself; `--require-schema` makes that a failure.
 
-`--mode model-only` reads the shards and index files and no view pages.
-`--mode full` additionally fetches the pages whose *arrangement* carries
-meaning and stores their geometry as nodes and edges.
+The extract's mode is the run's. A `model-only` run holds the shards and
+index files and no view pages; a `full` run additionally holds the pages whose
+*arrangement* carries meaning, which the extract stores as geometry nodes and
+edges.
 
 Not every view earns a page request. `GEOMETRY_VIEW_TYPES` in
 `bianlib/source.py` lists the four types that do. A Total view earns it because
@@ -230,7 +242,7 @@ added after it, which would have written a week-stale date every week.
 The remaining eleven workflows are on-demand: **Verify repo contents**, **Apply
 changeset**, **Package skills**, **Check publishing target (Google Drive)**,
 **Check raw archive target (Google Drive)**, **Census — BIAN landscape
-counts**, **Acquire — BIAN v14 (stage 2)**, **Extract — BIAN v14 (stage 1)**,
+counts**, **Acquire — BIAN v14 (stage 2)**, **Extract — BIAN v14 (stage 3)**,
 **Render — BIAN v14 (stage 2)**, **Publish sample to Drive** and **Sample —
 Savings Account diagrams**.
 

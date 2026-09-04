@@ -181,6 +181,16 @@ MODELS_CANDIDATES = ("data/models_data.js", "models_data.js",
                      "data/all_models_data.js")
 
 
+def parse_models(text: str) -> list:
+    """The `insite_models` entries from the models file's text.
+
+    The one parse of that file, shared by the live fetch below and by
+    `bianlib.acquire.stored_models`, which reads it back from a retained
+    run. Raises on an unparseable file; the callers decide what that means.
+    """
+    return _l(next(iter(parse_js_assignments(text).values())))
+
+
 def fetch_models(fetcher) -> tuple[list, str, list[str]]:
     """The `insite_models` entries, the URL that answered, and what was tried.
 
@@ -208,7 +218,7 @@ def fetch_models(fetcher) -> tuple[list, str, list[str]]:
             print(f"    {candidate:<28} HTTP {resp.status}", flush=True)
             continue
         try:
-            entries = _l(next(iter(parse_js_assignments(resp.text).values())))
+            entries = parse_models(resp.text)
         except Exception as e:                              # noqa: BLE001
             print(f"    {candidate:<28} unparseable ({type(e).__name__})",
                   flush=True)

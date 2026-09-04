@@ -26,11 +26,14 @@ Three declarations are made here and nowhere else, because they are the
 interpretation that acquisition cannot avoid:
 
   WHAT A SCOPE CONTAINS is declared in SCOPES below. The model scope is the
-  data files the landscape browser loads; the geometry scope is the view pages
-  whose category is in `BianSource.GEOMETRY_VIEW_TYPES`, imported rather than
-  copied. Resolving the geometry set needs the model parsed, so acquisition
-  calls `Landscape.parse` on the bytes it just stored -- the same parser, on
-  the same bytes, that stage 3 will use.
+  data files the landscape browser loads; the gate scope is the source input
+  gate's sample of per-view data files, chosen by `BianSource.gate_view_ids`;
+  the geometry scope is the view pages whose category is in
+  `BianSource.GEOMETRY_VIEW_TYPES`. Both are imported rather than copied.
+  Resolving either set needs the model parsed, so acquisition calls
+  `Landscape.parse` on the bytes it just stored -- the same parser, on the
+  same bytes, through the same readers (`stored_model` and friends, below)
+  that stage 3 uses on a retained run.
 
   WHAT THE DIGEST IS OVER: the transfer-decoded entity body. A gzip response
   is stored and hashed inflated; `Content-Encoding` travels in the record so
@@ -64,8 +67,9 @@ from bianlib.fetch import Fetcher, SourceUnhappy, robots_disallows
 #: Bumped when the layout or the meaning of a manifest field changes.
 MANIFEST_VERSION = "1"
 #: Bumped when this module's behaviour changes what gets fetched or recorded
-#: for unchanged upstream data.
-ACQUIRER_VERSION = "1"
+#: for unchanged upstream data. 2: the gate scope -- a run made by 1 declares
+#: no sample, and an extract built from it says so (G60 NOT MEASURED).
+ACQUIRER_VERSION = "2"
 
 RUN_FILE = "run.json"
 MANIFEST_FILE = "manifest.json"
@@ -104,6 +108,17 @@ SCOPES = {
                        "KNOWN (insiteViews), views DECLARED (of those "
                        "types), views STORED (2xx). Views that YIELD geometry "
                        "is a stage 3 measurement, status.views_with_geometry",
+    },
+    "gate": {
+        "cadence": "every acquisition",
+        "purpose": "the source input gate's SAMPLE of per-view data files, "
+                   "data/view_<id>_data.js, which nothing on the bulk path "
+                   "reads; config_data.js is in the model scope",
+        "declared_by": "BianSource.gate_view_ids(model): up to "
+                       "GATE_VIEW_SAMPLE view ids spread across diagram "
+                       "categories (imported, not copied). A SAMPLE: every "
+                       "gate finding from it is labelled sampled and kept "
+                       "out of the population aggregate",
     },
 }
 
@@ -231,6 +246,12 @@ def declare_geometry(model: L.Landscape, view_types) -> list[tuple[str, str]]:
             if model.categories.get(str(vid)) in view_types]
 
 
+def declare_gate(model: L.Landscape, view_ids) -> list[tuple[str, str]]:
+    """(key, url) for the gate's sampled per-view data files."""
+    return [(f"gate:view:{vid}", L.data_url(model.base, f"view_{vid}_data.js"))
+            for vid in view_ids]
+
+
 # --- the run ----------------------------------------------------------------
 
 def acquire(source, run_dir: Path, mode: str, provenance: dict,
@@ -351,11 +372,33 @@ def acquire(source, run_dir: Path, mode: str, provenance: dict,
             if r["key"].startswith("models:")]
         print(f"    models file: {found or 'NOT FOUND'}", flush=True)
 
+        # The model, from the bytes just stored, via the one parser. Both
+        # remaining scopes are declared from it.
+        store = _Store(run_dir)
+        try:
+            model = stored_model(store, base, records)
+        finally:
+            store.close()
+
+        # -- gate scope -----------------------------------------------------
+        print(f"  scope gate: {SCOPES['gate']['purpose']}", flush=True)
+        declared = declare_gate(model, source.gate_view_ids(model))
+        run["scopes"]["gate"] = dict(
+            SCOPES["gate"], sample=source.GATE_VIEW_SAMPLE,
+            views_known=len(model.insite_views), declared=len(declared))
+        print(f"    {len(declared)} of {len(model.insite_views)} views "
+              f"sampled", flush=True)
+        for key, url in declared:
+            records.append(fetch_artifact(fetcher, run_dir, base, url, key,
+                                          "gate"))
+        s = scope_summary("gate")
+        print(f"    {s['stored']} stored, {s['missing']} missing, "
+              f"{s['failed']} failed", flush=True)
+
         # -- geometry scope -------------------------------------------------
         if mode == "full":
             print(f"  scope geometry: {SCOPES['geometry']['purpose']}",
                   flush=True)
-            model = _parse_stored_model(run_dir, base, records)
             declared = declare_geometry(model, source.GEOMETRY_VIEW_TYPES)
             run["scopes"]["geometry"] = dict(
                 SCOPES["geometry"],
@@ -415,30 +458,152 @@ def acquire(source, run_dir: Path, mode: str, provenance: dict,
     return run
 
 
-def _parse_stored_model(run_dir: Path, base: str, records: list) -> L.Landscape:
-    """The model from the bytes just stored, via the one parser.
+# --- reading a run ----------------------------------------------------------
+#
+# Stage 3 consumes a run through these and nothing else, so it reads a run on
+# disk and a downloaded archive alike, and every artifact it consumes is
+# verified against the manifest's digest on the way in. A reader that trusted
+# the tree would read a 404 body as a shard; a reader that trusted the digest
+# without checking it would read bit-rot as content.
+
+class RunUnreadable(Exception):
+    """The run cannot be consumed: never finished, wrong source, or an
+    artifact does not match the digest its own manifest records."""
+
+
+def open_run(run_dir: Path) -> tuple[dict, list, "_Store"]:
+    """(run record, manifest records, store) for a FINISHED run.
+
+    Refuses a directory without the sidecar: run.json says "running" past
+    the point it can be trusted and the manifest may be absent. Whether the
+    run is WHOLE is the caller's question -- a partial run is still evidence,
+    and `run["state"]` travels into the extract's lineage so a reader can
+    see it was built from one.
+    """
+    run_dir = Path(run_dir)
+    if not (run_dir / SIDECAR_FILE).is_file():
+        raise RunUnreadable(
+            f"{run_dir} has no {SIDECAR_FILE}: the run never finished and "
+            f"is not evidence")
+    run = json.loads((run_dir / RUN_FILE).read_text(encoding="utf-8"))
+    manifest = json.loads((run_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
+    return run, list(manifest.get("artifacts", [])), _Store(run_dir)
+
+
+def artifact_bytes(store: "_Store", record: dict) -> bytes | None:
+    """The decoded bytes of one stored artifact, verified against the
+    manifest's digest. None when the artifact was not stored (404, failed);
+    RunUnreadable when it was and the bytes do not match."""
+    if record.get("outcome") != "stored":
+        return None
+    data = store.read(record["path"])
+    if data is None:
+        raise RunUnreadable(
+            f"{record['path']} is recorded as stored but is absent")
+    if _sha256(data) != record["sha256"]:
+        raise RunUnreadable(
+            f"{record['path']} does not match its manifest digest")
+    return data
+
+
+def _artifact_text(store: "_Store", record: dict | None) -> str:
+    data = artifact_bytes(store, record) if record else None
+    return "" if data is None else data.decode("utf-8", errors="replace")
+
+
+def stored_model(store: "_Store", base: str, records: list,
+                 object_view: int = 16) -> L.Landscape:
+    """The model from a run's stored bytes, via the one parser.
 
     Builds the `texts` shape `Landscape.parse` takes from the manifest
     records, so a shard the source answered 404 to is still declared as
-    requested and reported absent, exactly as the live loader does.
+    requested and reported absent, exactly as the live loader does. Used by
+    acquisition on the run it is writing and by stage 3 on a retained one.
     """
     by_key = {r["key"]: r for r in records}
-
-    def text(key: str) -> str:
-        r = by_key.get(key)
-        if not r or r["outcome"] != "stored":
-            return ""
-        return (run_dir / r["path"]).read_text(encoding="utf-8",
-                                               errors="replace")
-
     shards: dict = {}
     for r in records:
         if r["key"].startswith("shard:"):
             n = int(r["key"].split(":", 1)[1])
-            shards[n] = text(r["key"]) if r["outcome"] == "stored" else None
-    texts = {"mapping": text("index"), "shards": shards,
-             "relations": text("relations"), "on_views": text("on_views")}
-    return L.Landscape(base).parse(texts)
+            shards[n] = (_artifact_text(store, r)
+                         if r["outcome"] == "stored" else None)
+    texts = {"mapping": _artifact_text(store, by_key.get("index")),
+             "shards": shards,
+             "relations": _artifact_text(store, by_key.get("relations")),
+             "on_views": _artifact_text(store, by_key.get("on_views"))}
+    return L.Landscape(base, object_view=object_view).parse(texts)
+
+
+def stored_models(store: "_Store", records: list) -> tuple[list, str, list]:
+    """The `insite_models` entries, the candidate that answered, and every
+    candidate tried -- the shape `landscape.fetch_models` returns, from the
+    `models:<candidate>` records instead of the network. The first stored,
+    non-empty, parseable candidate wins, in manifest order, which is the
+    order acquisition tried them in."""
+    tried = []
+    for r in records:
+        if not r["key"].startswith("models:"):
+            continue
+        candidate = r["key"].split(":", 1)[1]
+        tried.append(candidate)
+        text = _artifact_text(store, r)
+        if not text.strip():
+            print(f"    {candidate:<28} not stored (HTTP {r.get('status')})",
+                  flush=True)
+            continue
+        try:
+            entries = L.parse_models(text)
+        except Exception as e:                              # noqa: BLE001
+            print(f"    {candidate:<28} unparseable ({type(e).__name__})",
+                  flush=True)
+            continue
+        print(f"    {candidate:<28} {len(entries)} models", flush=True)
+        return entries, candidate, tried
+    return [], "", tried
+
+
+def stored_config(store: "_Store", records: list) -> dict | None:
+    """Parsed config_data.js from the model scope, or None when the run does
+    not hold it -- never an empty dict, so the gate reports NOT MEASURED."""
+    for r in records:
+        if r["key"] == "config":
+            text = _artifact_text(store, r)
+            if text.strip():
+                try:
+                    return L.parse_js_assignments(text)
+                except Exception as e:                      # noqa: BLE001
+                    print(f"    gate: config_data.js unparseable "
+                          f"({type(e).__name__})", flush=True)
+            return None
+    return None
+
+
+def stored_view_data(store: "_Store", records: list) -> dict:
+    """The gate's sampled per-view data, {view id: parsed variables}, from
+    the gate scope. Empty when the run declares none (acquirer 1), which the
+    gate reports as NOT MEASURED rather than as zero of anything.
+
+    EVERY var in each file, not the first: these files declare several, and
+    reading one once reported zero viewpoints out of a file that had them."""
+    out: dict = {}
+    for r in records:
+        if not r["key"].startswith("gate:view:"):
+            continue
+        vid = r["key"].split(":", 2)[2]
+        text = _artifact_text(store, r)
+        if not text.strip():
+            print(f"    gate: view {vid} data not stored "
+                  f"(HTTP {r.get('status')})", flush=True)
+            continue
+        try:
+            payload = L.parse_js_assignments(text)
+        except Exception as e:                              # noqa: BLE001
+            print(f"    gate: view {vid} data unparseable "
+                  f"({type(e).__name__})", flush=True)
+            continue
+        if isinstance(payload, dict) and payload:
+            out[str(vid)] = payload
+    return out
 
 
 # --- fixity -----------------------------------------------------------------

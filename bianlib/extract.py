@@ -44,8 +44,10 @@ from bianlib import landscape as L
 from bianlib import plan as P
 
 #: Bumped when the shape of the document changes. Paired with the schema's
-#: own version; stage 2 refuses an extract it does not understand.
-SCHEMA_VERSION = "1.8.0"
+#: own version; stage 2 refuses an extract it does not understand. 1.9.0:
+#: `extract.run` carries lineage -- commit_sha, repo_digest, raw_run_id,
+#: raw_run_state -- naming the acquisition the extract was built from.
+SCHEMA_VERSION = "1.9.0"
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
@@ -340,11 +342,14 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
             "parser_version": PARSER_VERSION,
             "mode": mode,
             "shards": list(landscape.shards),
-            # Which CI run produced this. Without it there is no way back from
-            # a downloaded artifact to the run that made it, and stage 2's
-            # reuse is keyed on exactly that. "local" when built outside CI,
-            # so a sandbox replay can never be mistaken for a run — a
-            # rehearsal has been recorded as a result here once already.
+            # Which CI run produced this, and since 1.9.0 which acquisition
+            # it was built from: `raw_run_id` and `raw_run_state` name the
+            # retained run, `commit_sha` and `repo_digest` the code that
+            # fetched it. Without these there is no way back from a
+            # downloaded artifact to the bytes that made it. "local" when
+            # built outside CI, so a sandbox replay can never be mistaken for
+            # a run — a rehearsal has been recorded as a result here once
+            # already.
             "run": dict(run) if run else {"where": "local"},
         },
         "status": {

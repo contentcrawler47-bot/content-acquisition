@@ -142,22 +142,31 @@ def ci_run() -> dict:
 
 
 def cmd_extract(sources, args) -> int:
-    """Stage 1. Acquire the source's model and store it as structured data.
+    """Stage 3. Parse a retained acquisition run into structured data.
 
-    Deliberately does not render, filter or publish. The extract is what
-    stage 2 reads, so that a renderer or allowlist change costs a re-render
-    rather than another pass over someone else's web server.
+    Reads the run directory `acquire` wrote, or an archive downloaded from
+    Drive, and never the source. Deliberately does not render, filter or
+    publish. The extract is what the render stage reads, so that a renderer
+    or allowlist change costs a re-render rather than another pass over
+    someone else's web server; and because the run is retained, a parser
+    change costs a re-extract and no requests at all.
+
+    Exit 2 when the run cannot be read at all: never finished, the wrong
+    source, or an artifact that no longer matches its own manifest.
     """
+    from bianlib.acquire import RunUnreadable
+
     s = sources[args.source]
-    missing = s.missing_secrets()
-    if missing:
-        print(f"Cannot extract {s.id}: missing {', '.join(missing)}",
-              file=sys.stderr)
+    run_dir = Path(args.run_dir)
+    if not run_dir.is_dir():
+        print(f"Cannot extract {s.id}: {run_dir} is not a directory. Give "
+              f"the run `acquire` wrote (out/_raw/{s.id}/<run-id>) or a "
+              f"downloaded archive folder.", file=sys.stderr)
         return 2
     outdir = reset_dir(EXTRACT_OUT / s.id)
-    print(f"Extracting {s} -> {outdir}", flush=True)
+    print(f"Extracting {s} from {run_dir} -> {outdir}", flush=True)
     try:
-        s.build_extract(outdir, mode=args.mode, run=ci_run(),
+        s.build_extract(outdir, run_dir, run=ci_run(),
                         gate_options={
                             "max_share": args.gate_max_share,
                             "max_absolute": args.gate_max_absolute,
@@ -166,8 +175,11 @@ def cmd_extract(sources, args) -> int:
                         })
     except NotImplementedError as e:
         print(f"\n  {e}", file=sys.stderr)
-        print("  Stage 1 is optional; this source has not adopted it.",
+        print("  Stage 3 is optional; this source has not adopted it.",
               file=sys.stderr)
+        return 2
+    except RunUnreadable as e:
+        print(f"\n  cannot read the run: {e}", file=sys.stderr)
         return 2
     return 0
 
@@ -544,10 +556,13 @@ def main(argv=None) -> int:
     sub.add_parser("list", help="show configured sources")
     with_source(sub.add_parser("harvest", help="acquire content"))
     e = with_source(sub.add_parser(
-        "extract", help="STAGE 1: store the source model as data"))
-    e.add_argument("--mode", choices=["model-only", "full"],
-                   default="model-only",
-                   help="model-only reads no view pages")
+        "extract", help="STAGE 3: parse a retained run into stored data "
+                        "(never fetches)"))
+    e.add_argument("--run-dir", required=True, metavar="DIR",
+                   help="the acquisition run to read: out/_raw/<source>/"
+                        "<run-id> as `acquire` wrote it, or a folder "
+                        "downloaded from raw/<source>/<run-id>/ on Drive. "
+                        "The extract's mode is the run's")
     # Source input gate. The thresholds are passed in rather than fixed in the
     # tool so a reader of the run can see what was demanded of it, exactly as
     # the canary and the floors already are.

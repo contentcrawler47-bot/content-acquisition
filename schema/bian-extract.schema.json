@@ -104,7 +104,7 @@
        },
        "run": {
         "type": "object",
-        "description": "Which CI run produced this extract. Optional: extracts written before schema 1.5.0 carry no run block, and stage 2 must still read them. Excluded from content_digest by construction, so two runs over identical content agree.",
+        "description": "Which CI run produced this extract and, since 1.9.0, which acquisition run it was built from: raw_run_id and raw_run_state name the retained run, commit_sha and repo_digest the code that acquired it. Optional as a block: extracts written before schema 1.5.0 carry no run block, and stage 2 must still read them. Excluded from content_digest by construction, so two runs over identical content agree.",
         "required": [
          "where"
         ],
@@ -133,6 +133,27 @@
          },
          "url": {
           "type": "string"
+         },
+         "commit_sha": {
+          "type": "string",
+          "description": "The commit that ACQUIRED the run this extract reads, from run.json provenance; empty when acquired outside CI."
+         },
+         "repo_digest": {
+          "type": "string",
+          "description": "The repo digest computed over the tree that acquired the run, from run.json provenance."
+         },
+         "raw_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The retained run this extract was built from: raw/<source>/<raw_run_id>/ on Drive, out/_raw/<source>/<raw_run_id>/ in CI."
+         },
+         "raw_run_state": {
+          "enum": [
+           "complete",
+           "partial",
+           "failed"
+          ],
+          "description": "run.json state of that run. An extract built from a partial run says so here; the floors in check_extract.py decide whether it is thin enough to fail."
          }
         }
        }

@@ -143,50 +143,50 @@ class BianSource(BaseSource):
         "Strategy motivation view", "Ecosystem view",
     )
 
-    # -- stage 1: extract -------------------------------------------------
+    # -- stage 3: extract from a retained run ------------------------------
 
-    def _fetch_geometry(self, model, fetcher_factory) -> dict:
-        """Fetch and parse the pages whose arrangement is worth storing.
+    def _stored_geometry(self, store, records: list) -> dict:
+        """Parse the retained view pages whose arrangement is worth storing.
 
-        A separate Fetcher so page requests are paced independently of the
-        index files already read, and so a geometry failure cannot leave the
-        model half-loaded. Progress is reported every 50 views: a silent
-        ten-minute step is indistinguishable from a hung one.
+        The set is the run's geometry scope -- `declare_geometry` over the
+        same GEOMETRY_VIEW_TYPES, in the same order the live fetch walked --
+        so what is parsed here is exactly what acquisition declared, and a
+        view the source did not serve is counted failed rather than absent.
+        Progress is reported every 50 views, as before.
         """
+        from bianlib import acquire as A
         from bianlib import geometry as GEO
 
-        wanted = [vid for vid in sorted(model.insite_views, key=str)
-                  if model.categories.get(str(vid)) in self.GEOMETRY_VIEW_TYPES]
-        print(f"  geometry: {len(wanted)} views to fetch "
+        wanted = [r for r in records if r["scope"] == "geometry"]
+        print(f"  geometry: {len(wanted)} views declared "
               f"({', '.join(self.GEOMETRY_VIEW_TYPES)})", flush=True)
 
         out, failed = {}, 0
-        fetcher = fetcher_factory(self.base)
-        try:
-            for n, vid in enumerate(wanted, 1):
-                try:
-                    resp = fetcher.get(L.view_url(self.base, vid),
-                                       conditional=False)
-                    if resp.status != 200 or not resp.text.strip():
-                        failed += 1
-                        continue
-                    g = GEO.parse_geometry(resp.text, vid)
-                except Exception as e:                      # noqa: BLE001
-                    print(f"    view {vid}: {type(e).__name__}", flush=True)
+        for n, r in enumerate(wanted, 1):
+            vid = r["key"].split(":", 1)[1]
+            try:
+                text = A.artifact_bytes(store, r)
+                if text is None or not text.strip():
                     failed += 1
                     continue
-                if g["node_count"] or g["edge_count"]:
-                    out[str(vid)] = g
-                if n % 50 == 0 or n == len(wanted):
-                    print(f"    {n} of {len(wanted)} fetched, "
-                          f"{len(out)} with geometry, {failed} failed",
-                          flush=True)
-        finally:
-            fetcher.close()
+                g = GEO.parse_geometry(text.decode("utf-8", errors="replace"),
+                                       vid)
+            except A.RunUnreadable:
+                raise
+            except Exception as e:                          # noqa: BLE001
+                print(f"    view {vid}: {type(e).__name__}", flush=True)
+                failed += 1
+                continue
+            if g["node_count"] or g["edge_count"]:
+                out[str(vid)] = g
+            if n % 50 == 0 or n == len(wanted):
+                print(f"    {n} of {len(wanted)} read, "
+                      f"{len(out)} with geometry, {failed} failed",
+                      flush=True)
 
-        # A page that yielded nothing is not the same as a page not fetched.
+        # A page that yielded nothing is not the same as a page not stored.
         print(f"  geometry: {len(out)} of {len(wanted)} views parsed, "
-              f"{failed} failed", flush=True)
+              f"{failed} not stored", flush=True)
         return out
 
     #: How many per-view data files the gate samples. `data/view_<id>_data.js`
@@ -200,8 +200,11 @@ class BianSource(BaseSource):
     #: a factor of 40.
     GATE_VIEW_SAMPLE = 12
 
-    def _gate_view_ids(self, model) -> list:
-        """Up to GATE_VIEW_SAMPLE view ids, spread across diagram categories."""
+    def gate_view_ids(self, model) -> list:
+        """Up to GATE_VIEW_SAMPLE view ids, spread across diagram categories.
+
+        Public because acquisition declares the gate scope from it, so the
+        sample that is retained and the sample the gate reads are one list."""
         by_category: dict = {}
         for vid in sorted(model.insite_views, key=str):
             category = model.categories.get(str(vid), "(not an object)")
@@ -217,62 +220,19 @@ class BianSource(BaseSource):
                     del by_category[category]
         return picked
 
-    def _run_gate(self, model, options: dict) -> dict:
-        """Observe the source against the parser's declaration, then evaluate.
+    def _run_gate(self, model, options: dict, config, view_data) -> dict:
+        """Evaluate the parser's declaration against what the run holds.
 
-        Two artefacts are fetched here and nowhere else in the pipeline:
-        `config_data.js`, which is probed for existence and has never been
-        parsed, and a sample of `data/view_<id>_data.js`, which nothing on the
-        bulk path reads at all.
-
-        A failure to fetch either produces NOT MEASURED, never zero. The one
-        recorded measurement of ArchiMate viewpoints in this project was a zero
-        produced by thirty fetches that had all failed on a path later proved
-        wrong, and it survived the correction of that path.
+        `config` is the parsed config_data.js from the run's model scope, or
+        None; `view_data` the parsed gate sample, keyed by view id, empty when
+        the run declares no gate scope. Either absence produces NOT MEASURED,
+        never zero. The one recorded measurement of ArchiMate viewpoints in
+        this project was a zero produced by thirty fetches that had all failed
+        on a path later proved wrong, and it survived the correction of that
+        path. Nothing is fetched here any more: the sample is acquired and
+        retained like everything else, so it can be re-read.
         """
         from bianlib import gate as G
-
-        fetcher = Fetcher(self.base)
-        config, view_data = None, {}
-        try:
-            try:
-                resp = fetcher.get(L.data_url(self.base, "config_data.js"),
-                                   conditional=False)
-                if resp.status == 200 and resp.text.strip():
-                    config = L.parse_js_assignments(resp.text)
-                else:
-                    print(f"    gate: config_data.js HTTP {resp.status}",
-                          flush=True)
-            except Exception as e:                          # noqa: BLE001
-                print(f"    gate: config_data.js {type(e).__name__}",
-                      flush=True)
-
-            for vid in self._gate_view_ids(model):
-                url = L.data_url(self.base, f"view_{vid}_data.js")
-                try:
-                    resp = fetcher.get(url, conditional=False)
-                    if resp.status != 200 or not resp.text.strip():
-                        print(f"    gate: view {vid} data HTTP {resp.status}",
-                              flush=True)
-                        continue
-                    # EVERY var in the file, not the first.
-                    #
-                    # This used parse_js_assignment, which returns one value,
-                    # and these files declare several. Run 33464689986
-                    # inventoried `id` and `isExpandedObject` and reported zero
-                    # viewpoints -- not because there are none, but because
-                    # only the first variable was ever looked at. That is a
-                    # NOT MEASURED wearing a zero, and it is the same shape as
-                    # reading one shard of forty-seven: the exact fault this
-                    # gate exists to catch, reproduced inside the gate.
-                    payload = L.parse_js_assignments(resp.text)
-                    if isinstance(payload, dict) and payload:
-                        view_data[str(vid)] = payload
-                except Exception as e:                      # noqa: BLE001
-                    print(f"    gate: view {vid} data {type(e).__name__} "
-                          f"on {url}", flush=True)
-        finally:
-            fetcher.close()
 
         observation = G.observe(model, config=config, view_data=view_data,
                                 shard_results=model.shard_results)
@@ -286,40 +246,88 @@ class BianSource(BaseSource):
         verdict["exclusions"] = observation["exclusions"]
         return verdict
 
-    def build_extract(self, outdir: Path, mode: str = "model-only",
+    def build_extract(self, outdir: Path, run_dir: Path,
                       run: dict | None = None,
                       gate_options: dict | None = None) -> dict:
-        """Load the landscape and write it as a JSON-LD extract.
+        """Parse a retained acquisition run and write it as a JSON-LD extract.
 
-        Loads exactly what `harvest()` loads, and then stores it rather than
-        rendering it. Nothing is filtered: the allowlist is applied by stage 2,
-        so a change to it costs a re-render and no requests at all.
+        Stage 3. Reads `run_dir` -- a run as `acquire` wrote it or an archive
+        downloaded from Drive, reconciled by `acquire._Store` -- and never the
+        source: the extract workflow acquires first and extracts from the run
+        it just wrote, and an archived run can be re-normalised offline. Every
+        artifact consumed is verified against the manifest's digest as it is
+        read. Nothing is filtered: the allowlist is applied by the render
+        stage, so a change to it costs a re-render and no requests at all.
 
-        `model-only` reads the shards and index files. `full` additionally
-        fetches every view page and stores its geometry as nodes and edges,
-        which is several hundred requests against someone else's web server.
+        The extract's mode is the run's: `model-only` holds the shards and
+        index files, `full` also the declared view pages, stored as geometry.
+        Asking for geometry a run does not hold would be a request to fetch,
+        and fetching is not this stage's job.
+
+        `run` is the CI provenance of THIS run, passed in as data. The
+        acquisition's provenance -- commit SHA, repo digest, run id, state --
+        is read from the run record and carried into the extract as lineage,
+        so a downloaded extract names the bytes it was built from and the code
+        that fetched them (F22 closes here too: robots was checked by the
+        acquisition, and its answer is in the same record).
         """
+        from bianlib import acquire as A
         from bianlib import extract as E
 
-        fetcher = Fetcher(self.base)
-        model = L.Landscape(self.base, object_view=self.object_view).load(fetcher)
+        record, records, store = A.open_run(run_dir)
+        try:
+            if record.get("source_id") != self.id:
+                raise A.RunUnreadable(
+                    f"{run_dir} is a run of {record.get('source_id')!r}, "
+                    f"not {self.id!r}")
+            if (record.get("source_version") or "").rstrip("/") != self.base:
+                raise A.RunUnreadable(
+                    f"{run_dir} was acquired from {record.get('source_version')}"
+                    f", not {self.base}: one source id per landscape version")
+            mode = record.get("mode")
+            if mode not in E.MODES:
+                raise A.RunUnreadable(f"{run_dir} records mode {mode!r}")
+            prov = record.get("provenance") or {}
+            print(f"  run {record.get('run_id')}: mode {mode}, state "
+                  f"{record.get('state')}, acquired by commit "
+                  f"{(prov.get('commit_sha') or '')[:12] or 'UNKNOWN'} at repo "
+                  f"digest {prov.get('repo_digest') or 'UNKNOWN'}", flush=True)
+            robots = (record.get("policy") or {}).get("robots") or {}
+            print(f"  robots: checked={robots.get('checked')} "
+                  f"rule={robots.get('rule') or 'none'}", flush=True)
 
-        # The model index. Its location is discovered rather than asserted --
-        # see MODELS_CANDIDATES. Fetched after the model so a failure here
-        # cannot be confused with a failure to load the landscape.
-        print(f"  looking for insite_models under {self.base}", flush=True)
-        entries, models_url, tried = L.fetch_models(fetcher)
-        fetcher.close()
+            model = A.stored_model(store, self.base, records,
+                                   object_view=self.object_view)
 
-        geometry = {}
-        if mode == "full":
-            geometry = self._fetch_geometry(model, fetcher_factory=Fetcher)
+            # The model index, from whichever candidate acquisition found.
+            print("  insite_models from the run's model scope", flush=True)
+            entries, models_url, tried = A.stored_models(store, records)
 
-        gate = self._run_gate(model, gate_options or {})
+            geometry = {}
+            if mode == "full":
+                geometry = self._stored_geometry(store, records)
+
+            config = A.stored_config(store, records)
+            view_data = A.stored_view_data(store, records)
+            if "gate" not in (record.get("scopes") or {}):
+                print("  gate: the run declares no gate scope (acquirer "
+                      f"{record.get('acquirer_version')}); the per-view "
+                      "sample is NOT MEASURED", flush=True)
+            gate = self._run_gate(model, gate_options or {}, config, view_data)
+        finally:
+            store.close()
+
+        lineage = dict(run or {"where": "local"})
+        lineage.update({
+            "commit_sha": prov.get("commit_sha") or "",
+            "repo_digest": prov.get("repo_digest") or "",
+            "raw_run_id": str(record.get("run_id") or ""),
+            "raw_run_state": record.get("state") or "",
+        })
 
         doc = E.build(model, self.id, mode=mode, insite_models=entries,
                       models_url=models_url, models_tried=tried,
-                      geometry=geometry, run=run, gate=gate)
+                      geometry=geometry, run=lineage, gate=gate)
         summary = E.write(doc, outdir)
 
         status = doc["status"]

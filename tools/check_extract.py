@@ -596,6 +596,32 @@ def check_integrity(doc: dict, result: Result, args) -> None:
             result.add(status, f"{label} above floor",
                        f"{value}, floor {floor}")
 
+    # Lineage. Since schema 1.9.0 an extract names the retained run it was
+    # built from and the code that acquired it; a field that is declared but
+    # never checked is decoration, so its absence fails here. Older extracts
+    # are exempt by their own version, not by tolerance.
+    meta = doc.get("extract", {}) or {}
+    run_meta = meta.get("run") or {}
+    try:
+        lineage_due = tuple(int(x) for x in
+                            str(meta.get("schema_version", "0")).split(".")
+                            ) >= (1, 9, 0)
+    except ValueError:
+        lineage_due = False
+    if lineage_due:
+        raw_id = run_meta.get("raw_run_id")
+        state = run_meta.get("raw_run_state")
+        if not raw_id or not state:
+            result.add(FAIL, "extract names its raw run",
+                       f"raw_run_id={raw_id!r} raw_run_state={state!r}")
+        else:
+            acquired_by = (run_meta.get("commit_sha") or "")[:12] or "(none)"
+            result.add(PASS if state == "complete" else WARN,
+                       "extract names its raw run",
+                       f"{raw_id} ({state}), acquired by commit "
+                       f"{acquired_by} at repo digest "
+                       f"{run_meta.get('repo_digest') or '(none)'}")
+
     # The source input gate. Everything else in this file runs DOWNSTREAM of
     # the extractor and so cannot see what the extractor filtered out; this is
     # the one check that looks the other way. Reported here rather than

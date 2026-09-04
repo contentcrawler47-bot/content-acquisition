@@ -119,15 +119,17 @@ class Source:
         """
         return []
 
-    def build_extract(self, outdir: Path, mode: str = "model-only",
+    def build_extract(self, outdir: Path, run_dir: Path,
                       run: dict | None = None) -> dict:
         """Optional. Write this source's data as a structured extract.
 
-        Stage 1 of the two-stage design: acquire and store the model, without
-        applying any selection or producing any markdown. Sources that have
-        not adopted it keep working exactly as before — this is an optional
-        capability rather than a change to the harvest contract, so adding it
-        cannot affect a source that does not implement it.
+        Stage 3 of the pipeline design: parse a retained acquisition run
+        (`run_dir`, as `acquire` wrote it or as downloaded from the archive)
+        into stored, unselected data, without producing any markdown. It
+        never fetches. Sources that have not adopted it keep working exactly
+        as before — this is an optional capability rather than a change to
+        the harvest contract, so adding it cannot affect a source that does
+        not implement it.
 
         `run` is CI provenance recorded into the extract, supplied by the
         caller so that nothing below this line reads the environment.

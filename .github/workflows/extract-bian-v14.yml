@@ -1,28 +1,37 @@
-name: Extract — BIAN v14 (stage 1)
+name: Extract — BIAN v14 (stage 3)
 
-# STAGE 1 only: acquire the landscape model and store it as data. Renders
-# nothing, filters nothing, and publishes nothing.
+# Acquire, then extract from the run just written. Renders nothing, filters
+# nothing, and publishes nothing.
+#
+# Two steps against the source and the store, in this order (R3): `acquire`
+# fetches the landscape's artifacts and RETAINS them under out/_raw/, with
+# provenance; `extract` then parses THAT run and never the source. The extract
+# therefore names the bytes it was built from (`extract.run.raw_run_id`) and
+# the code that fetched them, and re-parsing the same run later -- from the
+# CI artifact or from the Drive archive -- must reproduce its content digest.
+# The acceptance test for this arrangement was exactly that: run
+# 33848524733-1, downloaded from Drive, re-normalised offline, a82abbd7e52e8558.
 #
 # References NO Google Drive secrets, so a red run here is always a source or
 # code problem. That separation is load-bearing for diagnosis and must survive:
-# if this workflow ever publishes, publishing belongs in its own job.
-#
-# The extract is uploaded as an artifact and deliberately NOT synced to Drive.
-# The first runs were meant to answer whether a Drive scope was viable; they
-# did, and the answer is that it is not needed. Storage was never the obstacle
-# — the extract is well under 1% of a free quota. Stage 2 reads an extract from
-# disk within the same run, so nothing reads a stored extract back, and a Drive
-# copy would be a sync path no run exercises.
+# archiving a run to Drive is the Acquire workflow's second job, and if this
+# workflow ever archives or publishes, that belongs in its own job. Which step
+# is red halves the search: a red `Acquire` is the source; a red `Check the
+# run` is a declared artifact the source did not serve; a red `Build the
+# extract` is the parser or a run that no longer matches its own manifest; a
+# red `Check the extract` is the gate or a floor.
 #
 # Nothing here applies the category allowlist. That is deliberate and is the
-# point of the split — selection belongs to stage 2, so changing
+# point of the split — selection belongs to the render stage, so changing
 # INCLUDE_CATEGORIES becomes a re-render against a stored extract rather than
 # 47 more shard requests against someone else's web server.
 #
-# Two scopes. `model-only` takes the shards and index files, about a minute of
-# fetching. `full` additionally fetches every view page and stores its geometry
-# as nodes and edges — several hundred requests against someone else's web
-# server, which is why this workflow is dispatch-only and must stay so.
+# Two scopes, chosen at acquisition; the extract's mode is the run's.
+# `model-only` takes the shards and index files and the gate's twelve-file
+# sample, about a minute of fetching. `full` additionally fetches every
+# declared view page and stores its geometry as nodes and edges — several
+# hundred requests against someone else's web server, which is why this
+# workflow is dispatch-only and must stay so.
 #
 # Reports counts, sizes and digests only, never acquired text: Actions logs on
 # a public repo are world-readable.
@@ -31,7 +40,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Extract scope
+        description: Acquisition scope; the extract's mode follows the run
         type: choice
         options:
           - model-only
@@ -61,6 +70,11 @@ concurrency:
 
 env:
   SOURCE_ID: bian-v14
+  RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  # The same directory `run.py acquire` derives from GITHUB_RUN_ID and
+  # GITHUB_RUN_ATTEMPT, so the later steps can name it without the acquire
+  # step telling them.
+  RUN_DIR: out/_raw/bian-v14/${{ github.run_id }}-${{ github.run_attempt }}
   # The canary and floors are stated here rather than hidden in the tool so a
   # reader of the run can see what was demanded of it. They are bounds, not
   # equalities: a gate that catches a broken mechanism, not one demanding
@@ -94,7 +108,7 @@ env:
 
 jobs:
   extract:
-    name: Can we store the BIAN model as data?
+    name: Can we retain the BIAN landscape and store its model as data?
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -119,9 +133,22 @@ jobs:
           python3 -m pip install --require-hashes -r requirements.txt
           python3 -m pip install --require-hashes -r requirements-extract.txt
 
+      - name: Acquire
+        run: |
+          python3 run.py acquire "$SOURCE_ID" --mode "${{ inputs.mode }}"
+
+      # Finished, intact, whole -- before anything reads it. A partial run is
+      # red here: an extract built from it would be thin in a way the floors
+      # below might or might not catch, and the run itself is still uploaded
+      # as evidence.
+      - name: Check the run
+        if: always()
+        run: |
+          python3 tools/check_raw.py "$RUN_DIR" --require-complete
+
       - name: Build the extract
         run: |
-          python3 run.py extract "$SOURCE_ID" --mode "${{ inputs.mode }}" \
+          python3 run.py extract "$SOURCE_ID" --run-dir "$RUN_DIR" \
             --gate-max-share "$GATE_MAX_SHARE" \
             --gate-max-absolute "$GATE_MAX_ABSOLUTE" \
             --gate-max-total-share "$GATE_MAX_TOTAL_SHARE" \
@@ -141,7 +168,8 @@ jobs:
 
       # Kept whether or not the checks passed: a failed extract is the thing
       # you most want to look at, and re-running it costs another pass over
-      # bian.org.
+      # bian.org. `warn` rather than `error` when nothing was written -- a red
+      # acquire means no extract, and the run should emit one error, not two.
       #
       # 90 days, the maximum for a public repo. The window is NOT for CI reuse:
       # nothing downloads this artifact from a later run, and no permission here
@@ -155,4 +183,17 @@ jobs:
           name: extract-${{ env.SOURCE_ID }}
           path: out/_extract/${{ env.SOURCE_ID }}/
           retention-days: 90
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      # The run the extract was built from, under the same name the Acquire
+      # workflow uses, so the two are interchangeable to `check_raw.py` and to
+      # a re-extract. Not archived from here: that is the Acquire workflow's
+      # job, with its own credentials.
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}
+          path: ${{ env.RUN_DIR }}/
+          retention-days: 90
+          if-no-files-found: warn
