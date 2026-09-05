@@ -121,7 +121,8 @@ timeouts, the request headers actually sent), and against which declaration of
 what should have been fetched. Every transport try is recorded, including the
 ones retried past. A run directory is never rewritten; a second attempt is a
 second run. `RAW.sha256` is written last and is the completeness marker:
-`tools/check_raw.py` refuses a run without one.
+`tools/check_raw.py` refuses a run without one. The run reaches the archive
+job through the Actions cache under an exact key, never as a CI artifact.
 
 The Acquire workflow's second job archives the run to Drive under
 `raw/<source>/<run-id>/` — a sibling of `content/`, which publishing can never
@@ -134,6 +135,19 @@ downloaded archive exactly as it verifies a run on disk, reading members
 straight from the zip. A folder carrying the marker is never touched again; a
 folder without one is an interrupted copy and is resumed. The archive job
 prints the Drive quota every time it runs.
+
+Runs are de-duplicated (R11). The run's identity is `acquire.run_digest`,
+sha256 over the sidecar's payload lines -- `run.json` and `manifest.json`
+excluded, since their timestamps differ between byte-identical acquisitions.
+When an archived run already holds the same bytes, the new run is archived as
+its three records plus `SAME_AS.json` naming that run, with no `payload.zip`:
+a few kilobytes, still an attributable record that the source was checked.
+Pointers are one hop. `acquire._Store` follows a pointer to a sibling folder,
+so `check_raw.py` and `extract` read a de-duplicated archive downloaded next
+to its target exactly as they read any run, verifying against the pointing
+run's own sidecar. `ARCHIVED.json` records `run_digest` and `same_as`;
+`check_raw.py` recomputes and compares. A pointed-to run must never be
+deleted while a pointer names it.
 
 Three scopes are declared in `bianlib/acquire.py` (`SCOPES`): the model
 files, the gate's twelve-file sample of per-view data, and -- in `full` mode --

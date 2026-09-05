@@ -98,7 +98,7 @@ Both tokens come from **rclone's built-in OAuth client**, which is a published
 app, so refresh tokens do not expire. There is no `GDRIVE_CLIENT_ID` or
 `GDRIVE_CLIENT_SECRET`: a project-owned OAuth client was attempted early on and
 abandoned over free-tier configuration problems, and would in any case have
-expired its tokens after seven days while in *Testing* status. Seven workflows
+expired its tokens after seven days while in *Testing* status. Six workflows
 still carry `RCLONE_CONFIG_GDRIVE_CLIENT_*` lines referencing those two secrets;
 the secrets have never existed, the lines expand to empty strings and select the
 built-in client, and they are removed as each workflow is next touched. The
@@ -319,13 +319,14 @@ to read `content/index.md` first, then the relevant source's `index.md`.
 - **Acquired text is never logged**, and `out/` is gitignored. Logs are public
   because the repo is public — when adding diagnostics, print counts, hashes
   and classifications, never harvested text.
-- **Artifacts are as public as logs**, and three of them currently carry
-  payload bytes: the run directory uploaded by **Acquire** and by **Extract**,
-  and the extract itself. Anyone with a GitHub account can download them. This
-  is known and scheduled: 072 replaces artifact transport with the Actions
-  cache, which has no public read path. Until then, do not add to it —
-  `check_workflows.py` refuses any new Class-B artifact and lists the three
-  exceptions by name.
+- **Artifacts are as public as logs**, and two of them still carry payload
+  bytes: the run directory and the extract uploaded by **Extract**. Anyone
+  with a GitHub account can download them. **Acquire** stopped at 073b: its
+  run travels to the archive job in the Actions cache, which has no public
+  read path. The two that remain go at 073c, when Extract consumes an
+  archived run by id and Render restores the extract from the cache. Until
+  then, do not add to them — `check_workflows.py` refuses any new Class-B
+  artifact and lists the two exceptions by name.
 - **Hardening.** Workflow-level `permissions:` everywhere, minimal;
   `contents: write` only in **Apply changeset** and in the landscape
   keep-alive commit. Every third-party action is pinned to a full commit SHA

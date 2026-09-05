@@ -23,7 +23,9 @@ private channel the session already has. Nothing is typed by anyone.
 
 ## Reading it, at session start
 
-1. Through the connector, read `content/context-mirror/latest-key.json`. It is
+1. Through the connector, read `context-mirror/latest-key.json` -- at the
+   **Drive root**, not under `content/`; the folder is where rclone's
+   `drive.file` remote creates it, and the connector finds it by title. It is
    about 120 characters: `{"snapshot": "<folder name>", "key": "<64 hex>"}`.
    Use `read_file_content`, and `excludeContentSnippets: true` on any listing
    that could include that folder.

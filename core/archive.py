@@ -9,7 +9,18 @@ Archive an acquisition run to Google Drive, immutably, and verify it landed.
                             stored under its run-relative path
         ARCHIVED.json       written LAST, after the copy has been verified
 
-Five uploads per run. The first archive layout (changeset 068) uploaded every
+Five uploads per run -- or four (R11): when the run's payload bytes are
+identical to a run already archived, `SAME_AS.json` naming that run is written
+in place of `payload.zip`. The run is still an attributable record that the
+source was checked and served the same bytes; the bytes are stored once.
+Identity is `bianlib.acquire.run_digest`, over the sidecar's payload lines
+only, so two acquisitions of an unchanged landscape agree whatever their
+timestamps. Pointers are one hop: a pointer always names a run that HOLDS its
+payload. A pointed-to run must not be deleted while a pointer names it;
+nothing here deletes, and `tools/check_raw.py` reads a pointer folder through
+its sibling.
+
+The first archive layout (changeset 068) uploaded every
 payload file separately, gzipped, and Drive's per-file API pacing turned a
 723-file, 18 MB copy into an hour: bursts of a dozen files with sixty-second
 back-offs between them, on rclone's shared built-in OAuth client. The 20-minute
@@ -58,6 +69,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import zipfile
@@ -77,6 +89,7 @@ ARCHIVE_LAYOUT = 2
 
 PAYLOAD = A.PAYLOAD_FILE
 MARKER = A.MARKER_FILE
+SAME_AS = A.SAME_AS_FILE
 #: Files copied as they are; everything else goes into the payload zip.
 PLAIN_IN_ARCHIVE = (A.RUN_FILE, A.MANIFEST_FILE, A.SIDECAR_FILE)
 
@@ -112,26 +125,34 @@ def _now() -> str:
 
 # --- staging ----------------------------------------------------------------
 
-def stage(run_dir: Path, staging: Path) -> dict:
+def stage(run_dir: Path, staging: Path, same_as: str | None = None,
+          run_digest: str = "") -> dict:
     """Build the archive form of `run_dir` in `staging`, which must not exist.
 
-    Deterministic: the same run staged twice produces byte-identical files.
-    Returns counts with both byte totals so the compression is on record.
+    With `same_as`, the pointer form: the plain files and SAME_AS.json naming
+    that run, no payload zip. Deterministic either way -- the same run staged
+    twice produces byte-identical files, which is why the pointer carries no
+    timestamp (the marker does). Returns counts with both byte totals so the
+    compression, or its absence, is on record.
     """
     if staging.exists():
         raise ArchiveError(f"staging directory already exists: {staging}")
     staging.mkdir(parents=True)
     summary = {"files": 0, "plain": 0, "members": 0,
-               "bytes_decoded": 0, "bytes_stored": 0}
+               "bytes_decoded": 0, "bytes_stored": 0, "payload_bytes": 0,
+               "same_as": same_as, "run_digest": run_digest}
     zip_path = staging / PAYLOAD
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED,
-                         compresslevel=6) as zf:
+    zf = None
+    if same_as is None:
+        zf = zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED,
+                             compresslevel=6)
+    try:
         for src in sorted(run_dir.rglob("*")):
             if not src.is_file():
                 continue
             rel = src.relative_to(run_dir)
             rel_posix = rel.as_posix()
-            if rel_posix in (PAYLOAD, MARKER) or rel_posix.endswith(".gz"):
+            if rel_posix in A.ARCHIVE_ONLY or rel_posix.endswith(".gz"):
                 raise ArchiveError(
                     f"{rel_posix}: a run directory must hold the run as "
                     f"written, not an archive form")
@@ -143,45 +164,124 @@ def stage(run_dir: Path, staging: Path) -> dict:
                 summary["plain"] += 1
                 summary["bytes_stored"] += len(data)
                 continue
+            if zf is None:
+                continue                      # a pointer stores no payload
             info = zipfile.ZipInfo(rel_posix, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = (0o644 & 0xFFFF) << 16
             zf.writestr(info, data, compresslevel=6)
             summary["members"] += 1
-    summary["bytes_stored"] += zip_path.stat().st_size
-    summary["payload_bytes"] = zip_path.stat().st_size
+    finally:
+        if zf is not None:
+            zf.close()
+    if same_as is None:
+        summary["bytes_stored"] += zip_path.stat().st_size
+        summary["payload_bytes"] = zip_path.stat().st_size
+    else:
+        pointer = {"layout": ARCHIVE_LAYOUT, "run_id": same_as,
+                   "run_digest": run_digest}
+        text = json.dumps(pointer, indent=1, sort_keys=True) + "\n"
+        (staging / SAME_AS).write_text(text, encoding="utf-8")
+        summary["plain"] += 1
+        summary["bytes_stored"] += len(text.encode("utf-8"))
     return summary
 
 
 # --- the remote --------------------------------------------------------------
+
+def remote_names(dest: str) -> tuple[set[str], bool] | None:
+    """(top-level file names, has subfolders) of a remote folder; None when
+    the folder is absent (rclone exit 3)."""
+    code, out, err = _run("lsf", "--files-only", dest)
+    if code == RCLONE_NOT_FOUND:
+        return None
+    if code != 0:
+        raise ArchiveError(f"rclone lsf failed (exit {code}): {_last_line(err)}")
+    names = {ln.strip() for ln in out.splitlines() if ln.strip()}
+    code, sub, _ = _run("lsf", "--dirs-only", dest)
+    return names, (code == 0 and bool(sub.strip()))
+
 
 def remote_state(dest: str) -> str:
     """One of: absent, empty, archived, incomplete, legacy.
 
     absent      no folder (rclone exit 3)
     empty       a folder with nothing in it -- free to use
-    archived    ARCHIVED.json present: finished, never touched again
+    archived    ARCHIVED.json present: finished, never touched again. A
+                pointer folder (SAME_AS.json, no payload.zip) is archived
+                like any other; `remote_pointer` says which it is.
     incomplete  files present, no marker, this layout -- an interrupted copy,
                 which `archive` resumes
     legacy      files present, no marker, no payload.zip: the per-file .gz
                 layout of changeset 068. Never touched; delete it by hand in
                 Drive if it should go (rclone made it, so deleting is safe).
     """
-    code, out, err = _run("lsf", "--files-only", dest)
-    if code == RCLONE_NOT_FOUND:
+    listing = remote_names(dest)
+    if listing is None:
         return "absent"
-    if code != 0:
-        raise ArchiveError(f"rclone lsf failed (exit {code}): {_last_line(err)}")
-    names = {ln.strip() for ln in out.splitlines() if ln.strip()}
-    code, sub, _ = _run("lsf", "--dirs-only", dest)
-    has_dirs = code == 0 and bool(sub.strip())
+    names, has_dirs = listing
     if not names and not has_dirs:
         return "empty"
     if MARKER in names:
         return "archived"
-    if PAYLOAD in names or not has_dirs:
+    if PAYLOAD in names or SAME_AS in names or not has_dirs:
         return "incomplete"
     return "legacy"
+
+
+def _cat(remote_path: str) -> str:
+    code, out, err = _run("cat", remote_path)
+    if code != 0:
+        raise ArchiveError(
+            f"rclone cat {remote_path} failed (exit {code}): {_last_line(err)}")
+    return out
+
+
+def remote_pointer(dest: str, names: set[str] | None = None) -> str | None:
+    """The run id an archived pointer folder names, or None for a holder."""
+    if names is None:
+        listing = remote_names(dest)
+        names = listing[0] if listing else set()
+    if SAME_AS not in names:
+        return None
+    try:
+        return str(json.loads(_cat(f"{dest}/{SAME_AS}"))["run_id"])
+    except (ValueError, KeyError, TypeError) as e:
+        raise ArchiveError(f"{dest}/{SAME_AS} is not a readable pointer: {e}")
+
+
+def _run_order(run_id: str) -> tuple:
+    """Newest first when sorted descending: CI ids are `<run>-<attempt>`,
+    both numeric; anything else sorts after them, by name."""
+    m = re.fullmatch(r"(\d+)-(\d+)", run_id)
+    return (1, int(m.group(1)), int(m.group(2))) if m else (0, 0, 0, run_id)
+
+
+def find_duplicate(source_id: str, digest: str,
+                   exclude: str | None = None) -> str | None:
+    """The newest archived run HOLDING payload bytes whose run digest equals
+    `digest`, or None. Pointers are skipped, so a match is always one hop.
+
+    Compares `run_digest` recomputed from each candidate's RAW.sha256 -- the
+    definition -- never ARCHIVED.json's `files.RAW.sha256`, which is the
+    sidecar's file digest and differs between byte-identical runs. Newest
+    first and stops at the first match: normally one small read.
+    """
+    if not digest:
+        return None
+    states = list_runs(source_id).get(source_id, {})
+    archived = sorted((r for r, st in states.items()
+                       if st == "archived" and r != exclude),
+                      key=_run_order, reverse=True)
+    for run in archived:
+        dest = destination(source_id, run)
+        listing = remote_names(dest)
+        if listing is None or SAME_AS in listing[0]:
+            continue
+        candidate = A.run_digest_of(A.parse_sidecar(_cat(f"{dest}/{A.SIDECAR_FILE}")))
+        if candidate == digest:
+            return run
+    return None
 
 
 def list_runs(source_id: str | None = None) -> dict[str, dict[str, str]]:
@@ -259,19 +359,32 @@ def archive(run_dir: Path, source_id: str, dry_run: bool = False) -> dict:
     if state == "incomplete":
         print(f"  {dest} holds an interrupted copy; resuming", flush=True)
 
+    # De-duplication (R11): the same payload bytes are stored once. The
+    # comparison is the run digest recomputed from each holder's sidecar.
+    digest = A.run_digest(run_dir)
+    same_as = find_duplicate(source_id, digest, exclude=run_id)
+    print(f"  raw digest {digest[:16]}"
+          + (f": identical to archived run {same_as}; archiving as a "
+             f"pointer, no {PAYLOAD}" if same_as else
+             ": no archived run holds these bytes"), flush=True)
+
     staging = run_dir.parent / f".{run_id}.archive"
     if staging.exists():
         shutil.rmtree(staging)
-    summary = stage(run_dir, staging)
+    summary = stage(run_dir, staging, same_as=same_as, run_digest=digest)
     summary.update(destination=dest, run_id=run_id, source_id=source_id,
                    layout=ARCHIVE_LAYOUT, resumed=(state == "incomplete"),
                    dry_run=dry_run)
-    print(f"  staged {summary['plain']} plain files + {PAYLOAD} with "
-          f"{summary['members']} members; "
-          f"{summary['bytes_decoded'] / 1e6:.1f} MB decoded -> "
-          f"{summary['bytes_stored'] / 1e6:.1f} MB stored "
-          f"({summary['bytes_decoded'] / max(1, summary['bytes_stored']):.1f}x)",
-          flush=True)
+    if same_as:
+        print(f"  staged {summary['plain']} plain files including {SAME_AS} "
+              f"-> {summary['bytes_stored'] / 1e3:.1f} KB stored", flush=True)
+    else:
+        print(f"  staged {summary['plain']} plain files + {PAYLOAD} with "
+              f"{summary['members']} members; "
+              f"{summary['bytes_decoded'] / 1e6:.1f} MB decoded -> "
+              f"{summary['bytes_stored'] / 1e6:.1f} MB stored "
+              f"({summary['bytes_decoded'] / max(1, summary['bytes_stored']):.1f}x)",
+              flush=True)
     try:
         if dry_run:
             print("  dry run: nothing copied", flush=True)
@@ -298,6 +411,8 @@ def archive(run_dir: Path, source_id: str, dry_run: bool = False) -> dict:
             "files": {p.name: A._sha256(p.read_bytes())
                       for p in sorted(staging.iterdir()) if p.is_file()},
             "members": summary["members"],
+            "run_digest": digest,
+            "same_as": same_as,
             "bytes_decoded": summary["bytes_decoded"],
             "bytes_stored": summary["bytes_stored"],
             "check": summary["check"],
@@ -353,7 +468,9 @@ def check_target() -> list[tuple[bool, str]]:
         for sid, states in runs.items():
             for run, state in states.items():
                 ok = state == "archived"
+                via = remote_pointer(destination(sid, run)) if ok else None
                 out.append((True, f"  {sid}/{run}: {state}"
+                            + (f"  -> same as {via}" if via else "")
                             + ("" if ok else "  <- not a completed archive")))
     out.append((True, quota_line()))
     return out

@@ -3,7 +3,7 @@ name: content-acquisition
 description: Operate the content-acquisition project — a GitHub Actions and Google Drive pipeline that harvests reference content from external sources, renders it to markdown and PlantUML, and publishes it privately for Claude to read. Use this skill whenever the user mentions content-acquisition, changesets, the harvest or publish workflows, adding a content source, repo digests or MANIFEST.sha256, or asks to change anything in that repo. Also use it when they mention BIAN together with harvesting, publishing or automation, or when a GitHub Actions log from this project is shared. Critically, changes to this repo must be delivered as verified changeset zips, never as loose files to paste — so consult this skill before proposing any modification to it.
 ---
 
-<!-- skill: content-acquisition v9 | repo: changeset 072 -->
+<!-- skill: content-acquisition v10 | repo: changeset 073b -->
 
 # content-acquisition
 

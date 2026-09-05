@@ -148,6 +148,24 @@ the new text is not visible until a new conversation. An installation cannot
 be verified in the session that produced it; check the hash at the start of
 the next one against `MANIFEST.sha256`.
 
+## Acquire and the archive
+
+**The `archive` job fails at the cache restore.** Since 073b the run travels
+from `acquire` to `archive` in the Actions cache under an exact key,
+`raw-bian-v14-<run-id>-<attempt>`, with `fail-on-cache-miss`. A miss on the
+first attempt means `acquire` never wrote a run directory (read that job); a
+miss on a re-run of the job means the entry has aged out -- entries live
+seven days from last use -- and the run must be re-acquired as a new run id.
+There is no fallback by design: nothing else could legitimately be archived
+under that id.
+
+**A downloaded run folder verifies as every payload file absent.** It is a
+de-duplicated run: `SAME_AS.json` present, no `payload.zip`. The payload is
+in the run it names, and `check_raw.py` reads it from a sibling folder of
+that name -- download both under one parent. The check names the pointer it
+followed; a pointer whose target is missing or wrong fails with the files
+named, never passes.
+
 ## Reading the project context
 
 **The connector read a file twice, once as base64.** `download_file_content`
@@ -171,7 +189,7 @@ push and the key write sees this for about a minute. Re-fetch both.
 with scope 2 (`drive.readonly`) and confirm with the `touch` refusal test
 before extracting the token.
 
-**Seven workflows reference `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET`.** The
+**Six workflows reference `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET`.** The
 secrets have never existed; the lines expand to empty strings and select
 rclone's built-in client, which is the intended path. They are inert, and are
 removed as each workflow is next touched for its own reasons (`SETUP.md`,

@@ -34,11 +34,14 @@ that moves with the change: a version constant, a new symbol, a schema version.
 for it as an **uploaded file** — pasting inline has repeatedly arrived empty in
 this project.
 
-**For a question about the data rather than the run, ask for the output
-artifact.** A workflow's artifact unzips in the sandbox and can be queried with
-scripts over the whole population; only the answers enter the context window,
-not the megabytes. Several questions that resisted reasoning were settled
-exactly this way in minutes.
+**For a question about the data rather than the run, ask for the data as a
+zip.** A run folder from `raw/` on Drive, or -- until 073c -- the Extract
+workflow's `extract-bian-v14` artifact, unzips in the sandbox and can be
+queried with scripts over the whole population; only the answers enter the
+context window, not the megabytes. Several questions that resisted reasoning
+were settled exactly this way in minutes. Acquire uploads no artifact since
+073b: its run travels to the archive job in the Actions cache and lives on
+Drive.
 
 `references/troubleshooting.md` lists the failures already encountered with
 their causes.
@@ -57,3 +60,14 @@ Never create anything under `raw/` by hand: rclone runs with the `drive.file`
 scope and cannot see files it did not create. Deleting a folder rclone made is
 safe. A folder with the marker is never rewritten; one without it is an
 interrupted copy that the next archive of the same run resumes.
+
+**De-duplicated runs.** When a run's payload bytes are identical to an
+archived run's -- `bianlib.acquire.run_digest`, over the sidecar's payload
+lines -- the folder holds `SAME_AS.json` naming that run and no
+`payload.zip`. It is still a record that the source was checked that day.
+Pointers are one hop. To read one in the sandbox, download **both** folders
+side by side under one parent; `check_raw.py` and `extract` read the payload
+through the sibling, verify it against the pointing run's own sidecar, and
+say so. `ARCHIVED.json` records `run_digest` and `same_as`, and `check_raw`
+recomputes both rather than trusting them. **Check raw archive target** lists
+every run with its pointer. Never delete a run another run points to.

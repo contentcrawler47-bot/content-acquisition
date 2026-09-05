@@ -280,9 +280,10 @@ def cmd_check_raw_target(_sources, _args) -> int:
 def cmd_archive(sources, args) -> int:
     """Archive one acquisition run to Drive, immutably, and verify it landed.
 
-    Exit 0 archived and verified; 2 refused (unfinished run, run that does
-    not verify locally, or a remote folder that already holds a run); 1 any
-    other archive failure. A refusal is not a fault -- it is the guard doing
+    Exit 0 archived and verified -- as a pointer when an archived run already
+    holds the identical payload bytes (R11); 2 refused (unfinished run, run
+    that does not verify locally, or a remote folder that already holds a
+    run); 1 any other archive failure. A refusal is not a fault -- it is the guard doing
     its job -- but it is still red, because the run was not archived.
     """
     from . import archive as archive_mod
@@ -302,6 +303,8 @@ def cmd_archive(sources, args) -> int:
         print(f"\n  {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     print(f"\n  archived {summary['run_id']} to {summary['destination']}"
+          + (f"  as a pointer to {summary['same_as']}"
+             if summary.get("same_as") else "")
           + ("  (dry run)" if summary.get("dry_run") else ""), flush=True)
     return 0
 

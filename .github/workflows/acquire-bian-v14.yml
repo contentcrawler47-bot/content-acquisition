@@ -11,8 +11,11 @@ name: Acquire — BIAN v14 (stage 2)
 # to Drive under raw/<source>/<run-id>/ with its own credentials and its own
 # failure; a red archive is a Drive problem and touched no source. Drive
 # credentials come from the `drive` Environment, so the acquire job cannot see
-# them at all. The run travels between the jobs as a CI artifact -- which is
-# PUBLIC, like the logs, and is replaced by the Actions cache at 072.
+# them at all. The run travels between the jobs in the ACTIONS CACHE under an
+# exact key (R12, D-3): the cache has no public read endpoint and can only be
+# restored by this repository's own workflows, whereas a CI artifact is
+# downloadable by any GitHub account for its whole retention. Nothing here
+# uploads an artifact, and `tools/check_workflows.py` refuses one.
 #
 # The archive is five uploads: run.json, manifest.json and RAW.sha256 plain,
 # payload.zip holding every payload file as a member (~10x smaller than
@@ -22,6 +25,15 @@ name: Acquire — BIAN v14 (stage 2)
 # carrying the marker is never touched again; a folder without it is an
 # interrupted copy and is resumed. A run whose acquire job did not finish (no
 # RAW.sha256) is refused -- it is not evidence and is not archived.
+#
+# DE-DUPLICATION (R11). Before staging, `archive` computes the run's digest
+# over its payload sidecar lines and compares it with every archived run that
+# holds payload bytes. Equal means the source served the same bytes: the run
+# is archived as its records plus SAME_AS.json naming that run, and no
+# payload.zip -- a few kilobytes, still an attributable record that the
+# source was checked. Pointers are one hop, and a pointed-to run must not be
+# deleted while a pointer names it. `check_raw.py` reads a pointer folder
+# through its sibling.
 #
 # What is fetched is DECLARED in bianlib/acquire.py (SCOPES) and recorded in
 # the run's run.json, with the counts stated separately: views KNOWN, views
@@ -68,9 +80,16 @@ env:
   # own flags, so RCLONE_VERSION is read as --version and every call dies.
   RC_VERSION: "1.71.1"
   # The same directory `run.py acquire` derives from GITHUB_RUN_ID and
-  # GITHUB_RUN_ATTEMPT, so the check and upload steps can name it without
+  # GITHUB_RUN_ATTEMPT, so the check and cache steps can name it without
   # the acquire step telling them.
   RUN_DIR: out/_raw/bian-v14/${{ github.run_id }}-${{ github.run_attempt }}
+  # Cache transport (DESIGN-OBSERVABILITY 9.5): exact key, no restore-keys,
+  # and the SAME path string on save and restore -- the cache hashes the
+  # path into the entry's version, so a different string is a miss. Any
+  # later consumer of this run (Extract at 073c) restores with this key and
+  # this path.
+  CACHE_KEY: raw-bian-v14-${{ github.run_id }}-${{ github.run_attempt }}
+  CACHE_PATH: out/_raw/bian-v14
 
 jobs:
   acquire:
@@ -109,17 +128,23 @@ jobs:
         run: |
           python3 tools/check_raw.py "$RUN_DIR" --require-complete
 
-      # Kept whether or not the checks passed: a failed acquisition is the
-      # thing you most want to look at. `warn` rather than `error` when
-      # nothing was written, so a failed run emits one error, not two.
-      - name: Upload the run
+      # Handed to the archive job whether or not the checks passed: a failed
+      # acquisition is the thing you most want to look at, and `archive`
+      # refuses on its own if the run never finished. Saved only when the run
+      # directory exists -- `cache/save` on an absent path is a hard error,
+      # and a red acquire should emit one error, not two.
+      - name: Is there a run directory to hand over?
+        id: have
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        run: |
+          if [ -d "$RUN_DIR" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; echo "  no run directory was written"; fi
+
+      - name: Hand the run to the archive job (Actions cache)
+        if: always() && steps.have.outputs.run == 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          name: raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}
-          path: ${{ env.RUN_DIR }}/
-          retention-days: 90
-          if-no-files-found: warn
+          path: ${{ env.CACHE_PATH }}
+          key: ${{ env.CACHE_KEY }}
 
   archive:
     name: Can we archive the run to Drive, immutably?
@@ -156,20 +181,25 @@ jobs:
           unzip -q "${pkg}"
           sudo install -m 755 "rclone-v${RC_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
 
-      - name: Fetch the run from the acquire job
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      # Exact key: this run's, saved by the acquire job minutes ago. A miss
+      # is a hard failure rather than a fallback, because there is nothing
+      # else that could legitimately be archived under this run id. A miss
+      # on a RE-RUN of this job means the entry has aged out (7 days unused)
+      # and the run must be re-acquired as a new run id.
+      - name: Take the run from the acquire job (Actions cache)
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          name: raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}
-          path: ${{ env.RUN_DIR }}
+          path: ${{ env.CACHE_PATH }}
+          key: ${{ env.CACHE_KEY }}
+          fail-on-cache-miss: true
 
-      # Exit 0 archived and verified; 2 refused by a guard (already holds a
-      # run, unfinished, or fails its own local check); 1 anything else.
+      # Exit 0 archived and verified -- as a pointer when the bytes are
+      # already held; 2 refused by a guard (already holds a run, unfinished,
+      # or fails its own local check); 1 anything else.
       - name: Archive
         env:
           RCLONE_CONFIG_GDRIVE_TYPE: drive
           RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
-          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
-          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: |
           python3 run.py archive "$SOURCE_ID" --run-id "$RUN_ID"
@@ -178,7 +208,8 @@ jobs:
         if: failure()
         run: |
           echo "A red ARCHIVE is a Drive problem or a guard; the acquire job touched no Drive."
+          echo "  cache miss -> the acquire job wrote no run, or this is a re-run more than 7 days later; re-acquire as a new run"
           echo "  exit 2: refused -- the remote folder already carries ARCHIVED.json, is a first-layout folder, or the run never finished"
-          echo "  missing credentials -> GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_TOKEN"
+          echo "  missing credentials -> GDRIVE_TOKEN"
           echo "  rejected credentials -> the OAuth token expired; re-run 'rclone config', update GDRIVE_TOKEN"
-          echo "Run 'Check raw archive target' to test the Drive half alone."
+          echo "Run 'Check raw archive target' to test the Drive half alone; it lists every run with its state and pointers."

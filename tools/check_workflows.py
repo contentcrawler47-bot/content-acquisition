@@ -74,15 +74,15 @@ PERSIST_CREDENTIALS_OK = {
     "mirror-context.yml:mirror": "pushes the context branch",
 }
 
-# Artifact uploads of Class-B content still in the repo. All three go at 072,
-# when the Actions cache replaces the artifact as inter-job transport (D-3).
+# Artifact uploads of Class-B content still in the repo. Acquire's went at
+# 073b, when the Actions cache replaced the artifact as its inter-job
+# transport (D-3); Extract's two go at 073c, when it stops acquiring (R10)
+# and Render restores the extract from the cache.
 CLASS_B_ARTIFACTS_OK = {
-    "acquire-bian-v14.yml:raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}":
-        "transport between acquire and archive; becomes a cache key at 072",
     "extract-bian-v14.yml:raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}":
-        "this workflow stops acquiring at 072 (R10)",
+        "this workflow stops acquiring at 073c (R10)",
     "extract-bian-v14.yml:extract-${{ env.SOURCE_ID }}":
-        "read by Render source: stored; becomes a cache restore at 072",
+        "read by Render; becomes a cache restore at 073c",
 }
 
 ALLOWED_TRIGGERS = {"workflow_dispatch", "schedule", "workflow_call", "workflow_run"}

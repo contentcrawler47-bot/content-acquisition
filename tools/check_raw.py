@@ -22,6 +22,13 @@ Three questions, in the order they can be answered:
              it a partial run is a warning, because the run itself is still
              evidence worth keeping.
 
+A de-duplicated archive (SAME_AS.json, no payload.zip) is read through the
+SIBLING folder it names -- download both folders side by side -- and the
+check says so. Its payload files verify against its OWN sidecar, so a target
+that is absent or wrong is reported as absent or mismatched files, never as a
+pass. When ARCHIVED.json is present, the run digest it recorded is compared
+with the one recomputed here; a difference is a finding.
+
 Counts carry denominators throughout. Prints paths, statuses and digests only,
 never content: logs on a public repo are world-readable.
 """
@@ -72,13 +79,21 @@ def main() -> int:
           f"{run.get('state')!r}")
 
     # -- INTACT -----------------------------------------------------------
-    v = A.verify_run(run_dir)
+    try:
+        v = A.verify_run(run_dir)
+    except A.RunUnreadable as e:
+        failures.append(str(e))
+        _report(failures, warnings)
+        return 1
     print(f"  INTACT     {v['files_verified']} of {v['files_listed']} listed "
           f"files verified"
           + (f" ({v['files_compressed']} read from the archive form)"
              if v["files_compressed"] else "")
           + f"; {v['artifacts_verified']} of {v['artifacts_stored']} stored "
           f"artifacts match their manifest digest")
+    if v["payload_via"]:
+        print(f"  POINTER    {A.SAME_AS_FILE} names run {v['payload_via']}; "
+              f"payload read from that sibling folder")
     for rel in v["files_absent"]:
         failures.append(f"listed in sidecar but absent: {rel}")
     for rel in v["files_mismatched"]:
@@ -104,8 +119,37 @@ def main() -> int:
     # The run's identity, over payload lines only: equal for two runs that
     # fetched the same bytes, whatever their timestamps. This is what
     # de-duplication compares; the digest of RAW.sha256 as a file is not.
-    print(f"\n  raw digest {A.run_digest(run_dir)[:16] or '(none)'}  "
+    digest = A.run_digest(run_dir)
+    print(f"\n  raw digest {digest[:16] or '(none)'}  "
           f"(payload lines only; excludes {', '.join(A.RECORD_FILES)})")
+    # The archive's record of that digest, checked rather than trusted, and
+    # the pointer's, which must equal both.
+    marker_path = run_dir / A.MARKER_FILE
+    if marker_path.is_file():
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        recorded = marker.get("run_digest")
+        if recorded and recorded != digest:
+            failures.append(f"{A.MARKER_FILE} records run digest "
+                            f"{recorded[:16]}, recomputed {digest[:16]}")
+        if marker.get("same_as") and marker["same_as"] != v["payload_via"]:
+            failures.append(f"{A.MARKER_FILE} says same_as "
+                            f"{marker['same_as']} but {A.SAME_AS_FILE} "
+                            f"{'names ' + v['payload_via'] if v['payload_via'] else 'is absent'}")
+    if v["payload_via"]:
+        ptr = A.pointer_of(run_dir) or {}
+        if ptr.get("run_digest") and ptr["run_digest"] != digest:
+            failures.append(f"{A.SAME_AS_FILE} records run digest "
+                            f"{ptr['run_digest'][:16]}, this run's is "
+                            f"{digest[:16]}")
+        target = run_dir.parent / v["payload_via"]
+        if (target / A.SIDECAR_FILE).is_file():
+            tdigest = A.run_digest(target)
+            if tdigest != digest:
+                failures.append(f"pointed-to run {v['payload_via']} has raw "
+                                f"digest {tdigest[:16]}, not {digest[:16]}")
+            if A.pointer_of(target):
+                failures.append(f"pointed-to run {v['payload_via']} is itself "
+                                f"a pointer; pointers are one hop")
     prov = run.get("provenance") or {}
     print(f"  provenance where={prov.get('where')} run={prov.get('run_id')} "
           f"sha={(prov.get('commit_sha') or '')[:12] or '(none)'} "

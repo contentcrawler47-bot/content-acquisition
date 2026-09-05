@@ -23,10 +23,17 @@ name: Render — BIAN v14 (stage 2)
 #   than the last, because a capability with no workflow behind it has not
 #   been shipped — that mistake was made once here already.
 #
-# INPUT: `source: stored` takes stage 1's artifact — by default the most
-# recent successful Extract run, or a run you pin. It never falls back to
-# fetching: if there is no stored extract it fails and says so. Fetching is
-# `source: fresh`, chosen deliberately, and the log names which happened.
+# INPUT: a stored extract — by default the most recent successful Extract
+# run's, or a run you pin. There is no other source. A `fresh` option that
+# fetched from bian.org existed until changeset 073b; it went because Acquire
+# is the sole fetcher (R10), and because it had been invoking `extract`
+# without the `--run-dir` it has required since 070. If there is no stored
+# extract this workflow fails and says so; it never fetches.
+#
+# The extract is verified INSIDE `run.py render` before anything is read
+# (every file against EXTRACT.sha256, since 073a). A workflow step doing the
+# same with `sha256sum -c` was removed at 073b: a green step here is not
+# evidence the stage verified, and a second consumer could forget the step.
 
 # TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
 # pull_request_target -- the Actions cache is private only while no fork
@@ -34,26 +41,11 @@ name: Render — BIAN v14 (stage 2)
 on:
   workflow_dispatch:
     inputs:
-      source:
-        description: Where the extract comes from
-        type: choice
-        options:
-          - stored
-          - fresh
-        default: stored
       run_id:
         description: >-
-          Optional. Pin a specific "Extract — BIAN v14 (stage 1)" run. Leave
-          blank to use the most recent successful one. Ignored when source is
-          fresh.
+          Optional. Pin a specific "Extract — BIAN v14 (stage 3)" run. Leave
+          blank to use the most recent successful one.
         required: false
-      mode:
-        description: Extract scope, used only when source is fresh
-        type: choice
-        options:
-          - model-only
-          - full
-        default: model-only
       add_category:
         description: "EXPERIMENT: also keep this category (reports only)"
         required: false
@@ -101,13 +93,11 @@ jobs:
           python3 -m pip install --require-hashes -r requirements.txt
           python3 -m pip install --require-hashes -r requirements-extract.txt
 
-      # Which extract, decided in one place and printed. Reusing stored data
-      # must never be able to turn into a fetch by accident: if `stored` finds
-      # nothing, this fails. There is deliberately no fallback — a reuse run
+      # Which extract, decided in one place and printed. If nothing is
+      # found, this fails. There is deliberately no fallback — a reuse run
       # that quietly re-fetched would produce a correct-looking result by a
       # route nobody asked for, and the log would be the only evidence.
       - name: Resolve which extract to use
-        if: inputs.source == 'stored'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -120,7 +110,7 @@ jobs:
                    --workflow extract-bian-v14.yml --status success \
                    --limit 1 --json databaseId --jq '.[0].databaseId // empty')
             if [ -z "$id" ]; then
-              echo "::error title=No stored extract::No successful 'Extract — BIAN v14 (stage 1)' run was found. Run it, or set source to 'fresh'."
+              echo "::error title=No stored extract::No successful 'Extract — BIAN v14 (stage 3)' run was found. Run it first; this workflow never fetches."
               exit 1
             fi
             echo "  most recent successful extract run: $id"
@@ -132,7 +122,6 @@ jobs:
       # pinned v6 here by oversight; nothing is known to differ, but one repo
       # should pin one version.
       - name: Take the extract from that run
-        if: inputs.source == 'stored'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: extract-bian-v14
@@ -140,19 +129,8 @@ jobs:
           run-id: ${{ env.EXTRACT_RUN_ID }}
           github-token: ${{ github.token }}
 
-      # Named separately from the step above so the log says plainly which of
-      # the two happened. This one makes requests to bian.org; that one does
-      # not, and the difference must be visible after the fact.
-      - name: Or extract fresh (makes requests to bian.org)
-        if: inputs.source == 'fresh'
-        run: python3 run.py extract "$SOURCE_ID" --mode "${{ inputs.mode }}"
-
-      - name: Confirm the extract is intact before reading it
-        run: |
-          cd "out/_extract/$SOURCE_ID"
-          sha256sum -c EXTRACT.sha256 --quiet
-          echo "  extract verified: $(wc -l < EXTRACT.sha256) files"
-
+      # Verifies the extract against its sidecar before reading it, then
+      # selects. A mismatch is exit 1 naming the file; no extract is exit 2.
       - name: Select
         run: |
           python3 run.py render "$SOURCE_ID" \
@@ -163,9 +141,9 @@ jobs:
         if: failure()
         run: |
           echo "::error title=Render failed::This is a SELECTION or CODE problem."
-          echo "  No Drive credentials are used here and no source is fetched"
-          echo "  unless run_id was left blank."
+          echo "  No Drive credentials are used here and no source is fetched."
           echo "  Canary missing    -> the allowlist no longer keeps a known object."
           echo "  Below the floor   -> selection kept fewer objects than min_objects."
-          echo "  No stored extract -> run Extract first, or set source to 'fresh'."
+          echo "  No stored extract -> run Extract first."
+          echo "  Extract mismatch  -> a file differs from EXTRACT.sha256; the log names it."
           echo "  Artifact expired  -> the pinned run is older than 90 days."

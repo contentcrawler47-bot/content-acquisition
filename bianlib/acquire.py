@@ -79,7 +79,11 @@ SIDECAR_FILE = "RAW.sha256"
 #: directory on disk never contains either; an archive always does.
 PAYLOAD_FILE = "payload.zip"
 MARKER_FILE = "ARCHIVED.json"
-ARCHIVE_ONLY = (PAYLOAD_FILE, MARKER_FILE)
+#: A de-duplicated archive (R11): the run's own records and sidecar, this
+#: pointer naming the archived run that holds the identical payload bytes,
+#: and no payload.zip. `_Store` follows it to a sibling folder of that name.
+SAME_AS_FILE = "SAME_AS.json"
+ARCHIVE_ONLY = (PAYLOAD_FILE, MARKER_FILE, SAME_AS_FILE)
 
 MODES = ("model-only", "full")
 
@@ -620,16 +624,21 @@ def write_sidecar(run_dir: Path) -> int:
     return len(lines)
 
 
-def read_sidecar(run_dir: Path) -> dict:
+def parse_sidecar(text: str) -> dict:
+    """{rel: sha256} from the sidecar's text, wherever the text came from."""
     out = {}
-    path = run_dir / SIDECAR_FILE
-    if not path.is_file():
-        return out
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if "  " in line:
             digest, rel = line.split("  ", 1)
             out[rel] = digest
     return out
+
+
+def read_sidecar(run_dir: Path) -> dict:
+    path = run_dir / SIDECAR_FILE
+    if not path.is_file():
+        return {}
+    return parse_sidecar(path.read_text(encoding="utf-8"))
 
 
 #: The two files the run-level digest leaves out. Both carry `started_at`,
@@ -653,10 +662,31 @@ def run_digest(run_dir: Path) -> str:
     The 64-hex form is returned; print the first 16 where the repo digest and
     the extract's content digest are also printed short.
     """
-    listed = read_sidecar(run_dir)
+    return run_digest_of(read_sidecar(run_dir))
+
+
+def run_digest_of(listed: dict) -> str:
+    """`run_digest` over an already-parsed sidecar ({rel: sha256}), so the
+    archive can apply the one formula to a remote run's sidecar text without
+    downloading the run. The formula lives here and nowhere else."""
     lines = "".join(f"{listed[rel]}  {rel}\n" for rel in sorted(listed)
                     if rel not in RECORD_FILES)
     return hashlib.sha256(lines.encode("utf-8")).hexdigest() if lines else ""
+
+
+def pointer_of(run_dir: Path) -> dict | None:
+    """The parsed SAME_AS.json of a de-duplicated archive, or None. A file
+    that is present but unreadable is RunUnreadable, never silently None."""
+    path = Path(run_dir) / SAME_AS_FILE
+    if not path.is_file():
+        return None
+    try:
+        ptr = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(ptr, dict) or not ptr.get("run_id"):
+            raise ValueError("no run_id")
+        return ptr
+    except (ValueError, OSError) as e:
+        raise RunUnreadable(f"{path} is not a readable pointer: {e}") from e
 
 
 class _Store:
@@ -674,9 +704,23 @@ class _Store:
         self.run_dir = run_dir
         self._zip = None
         self._members: set[str] = set()
-        zip_path = run_dir / PAYLOAD_FILE
+        #: Where payload files live: this folder, or -- for a de-duplicated
+        #: archive (R11) -- the SIBLING folder its SAME_AS.json names. A
+        #: pointer's own RAW.sha256 lists the same payload digests, so every
+        #: check above this line verifies the pointed-to bytes against the
+        #: pointing run's sidecar without knowing a pointer was followed.
+        self.payload_dir = run_dir
+        self.via: str | None = None
+        ptr = pointer_of(run_dir)
+        if ptr is not None and not (run_dir / PAYLOAD_FILE).is_file():
+            self.via = str(ptr["run_id"])
+            self.payload_dir = run_dir.parent / self.via
+        zip_path = self.payload_dir / PAYLOAD_FILE
         if zip_path.is_file():
-            self._zip = zipfile.ZipFile(zip_path)
+            try:
+                self._zip = zipfile.ZipFile(zip_path)
+            except zipfile.BadZipFile as e:
+                raise RunUnreadable(f"{zip_path} is not a zip: {e}") from e
             self._members = set(self._zip.namelist())
 
     @property
@@ -689,7 +733,11 @@ class _Store:
             return plain.read_bytes()
         if self._zip is not None and rel in self._members:
             return self._zip.read(rel)
-        packed = self.run_dir / (rel + ".gz")
+        if self.payload_dir is not self.run_dir:
+            plain = self.payload_dir / rel
+            if plain.is_file() and rel not in RECORD_FILES:
+                return plain.read_bytes()
+        packed = self.payload_dir / (rel + ".gz")
         if packed.is_file():
             with gzip.open(packed, "rb") as fh:
                 return fh.read()
@@ -719,19 +767,24 @@ def verify_run(run_dir: Path) -> dict:
     recorded digest of its decoded bytes, no file is present that it does
     not name, and every artifact the manifest says was stored is on disk
     with the manifest's digest. `files_compressed` says how many were read
-    through gzip, so a check on an archive can be told from one on a run.
+    from the archive form, so a check on an archive can be told from one on
+    a run; `payload_via` names the sibling run a SAME_AS.json pointer was
+    followed to, or None. A pointer whose target is absent verifies as every
+    payload file absent -- an incomplete restore, never a pass.
     """
     result = {"ok": False, "sidecar": False, "files_listed": 0,
               "files_verified": 0, "files_compressed": 0,
               "files_mismatched": [], "files_absent": [],
               "files_stray": [], "artifacts_stored": 0,
-              "artifacts_verified": 0, "artifacts_mismatched": []}
+              "artifacts_verified": 0, "artifacts_mismatched": [],
+              "payload_via": None}
     listed = read_sidecar(run_dir)
     if not listed:
         return result
     result["sidecar"] = True
     result["files_listed"] = len(listed)
     store = _Store(run_dir)
+    result["payload_via"] = store.via
     try:
         for rel, digest in listed.items():
             data = store.read(rel)

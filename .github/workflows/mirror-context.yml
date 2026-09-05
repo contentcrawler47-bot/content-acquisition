@@ -162,7 +162,7 @@ jobs:
               -o context.tar.gz.gpg context.tar.gz
           blob=$(sha256sum context.tar.gz.gpg | cut -d' ' -f1)
           python3 - "$LATEST" "$files" "$bytes" "$blob" > MIRROR.json <<'PY'
-          import datetime, json, sys
+          import datetime, json, os, sys
           snap, files, nbytes, blob = sys.argv[1:]
           print(json.dumps({
               "snapshot": snap,
@@ -170,7 +170,9 @@ jobs:
               "files": int(files), "bytes": int(nbytes),
               "blob": "context.tar.gz.gpg", "blob_sha256": blob,
               "cipher": "gpg symmetric AES256, s2k SHA512",
-              "key": "Drive content/context-mirror/latest-key.json",
+              # Derived from the path the key is actually written to, below;
+              # a description typed beside it said content/ for one snapshot.
+              "key": "Drive " + os.environ["KEY_REMOTE_PATH"],
               "index": "INDEX.md and MANIFEST.sha256 inside the archive",
           }, indent=2))
           PY
