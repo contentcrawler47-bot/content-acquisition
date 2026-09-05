@@ -802,18 +802,22 @@ class ExtractUnreadable(Exception):
     for. The stage-3 counterpart of `acquire.RunUnreadable`."""
 
 
-def verify(outdir, expect_digest: str | None = None) -> dict:
+def verify(outdir, expect_digest: str | None = None,
+           expect_raw_run_id: str | None = None) -> dict:
     """Verify a stored extract before anything reads it. Raises on failure.
 
     Three checks, in the order a consumer needs them (S.6): the sidecar is
     present -- it is written last, so its absence means the write never
     finished; every file it lists is present with the recorded digest, and no
     `.jsonld` is present that it does not list; and, when the caller says
-    which extract it wants, the index's `content_digest` is that one. The
-    content digest is NOT recomputed from the parts here: that is the
-    producer's checker's job before the extract is handed on, and repeating
-    it on every restore would re-read every part to learn what the sidecar
-    plus the declared digest already establish.
+    which extract it wants, the index declares that identity -- its
+    `content_digest` (Regenerate proving an equality) or its
+    `extract.run.raw_run_id` (Render asked for the extract of one run; the
+    cache key named it, and the restored object must agree). The content
+    digest is NOT recomputed from the parts here: that is the producer's
+    checker's job before the extract is handed on, and repeating it on every
+    restore would re-read every part to learn what the sidecar plus the
+    declared digest already establish.
 
     Returns counts, so a caller can print what was verified. This used to be
     a `sha256sum -c` step in the Render workflow, where a second consumer
@@ -847,19 +851,27 @@ def verify(outdir, expect_digest: str | None = None) -> dict:
             f"{len(absent)} listed but absent, {len(differs)} differ, "
             f"{len(stray)} present but unlisted"
             + (f" (first: {(absent + differs + stray)[0]})"))
-    declared = ""
-    if expect_digest:
+    declared, raw_run_id = "", ""
+    if expect_digest or expect_raw_run_id:
         index = json.loads((outdir / INDEX_FILE).read_text(encoding="utf-8"))
         declared = str(index.get("content_digest", ""))
-        if not declared.startswith(expect_digest):
-            raise ExtractUnreadable(
-                f"{outdir} is extract {declared[:16] or '(undeclared)'}, "
-                f"not the {expect_digest[:16]} that was asked for")
-    return {"files": len(listed), "content_digest": declared}
+        raw_run_id = str(((index.get("extract") or {}).get("run") or {})
+                         .get("raw_run_id") or "")
+    if expect_digest and not declared.startswith(expect_digest):
+        raise ExtractUnreadable(
+            f"{outdir} is extract {declared[:16] or '(undeclared)'}, "
+            f"not the {expect_digest[:16]} that was asked for")
+    if expect_raw_run_id and raw_run_id != expect_raw_run_id:
+        raise ExtractUnreadable(
+            f"{outdir} was built from run {raw_run_id or '(unrecorded)'}, "
+            f"not the {expect_raw_run_id} that was asked for")
+    return {"files": len(listed), "content_digest": declared,
+            "raw_run_id": raw_run_id}
 
 
 def read(outdir, verify_first: bool = True,
-         expect_digest: str | None = None) -> dict:
+         expect_digest: str | None = None,
+         expect_raw_run_id: str | None = None) -> dict:
     """Load a partitioned extract back into one document.
 
     The inverse of write(), used by stage 2 and by tools/check_extract.py so
@@ -870,7 +882,7 @@ def read(outdir, verify_first: bool = True,
     """
     outdir = Path(outdir)
     if verify_first:
-        verify(outdir, expect_digest)
+        verify(outdir, expect_digest, expect_raw_run_id)
     index = json.loads((outdir / INDEX_FILE).read_text(encoding="utf-8"))
     doc = {k: v for k, v in index.items() if k != "parts"}
     for meta in index.get("parts", []):

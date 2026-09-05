@@ -15,7 +15,9 @@ already halves the search.
 | **Check publishing target** | Drive problem. Touches no source. |
 | **Source — \<source\>** | Read which step failed; extraction runs first. |
 | **Acquire — \<source\>** | Two jobs. A red `acquire` referenced no Drive secrets, so it is a source or code problem. A red `archive` touched no source: a Drive problem, or a guard refusing with exit 2 — the remote folder already carries `ARCHIVED.json`, it is a first-layout per-file folder, or the run never finished. |
-| **Check raw archive target** | The Drive half alone. Lists every run folder with its state. |
+| **Extract — \<source\>** / **Regenerate — \<source\>** | Two jobs. A red `restore` is a Drive or archive problem, or a refusal with exit 2 (run absent, incomplete, or a broken pointer); it touched no source. A red `extract` has no credentials and fetched nothing: a code or data problem, and since 073c never a source problem. |
+| **Render — \<source\>** | No secrets, no network. A `::notice` naming a Regenerate dispatch is a cache miss, exit 2, not a fault; anything else is selection or code. |
+| **Check raw archive target** | The Drive half alone. Lists every run folder with its state and, with `pointers` on, sweeps every pointer against its target. |
 
 Within extraction, validation is staged — Connectivity, Payload, Parse,
 Extract, Render — and stops at the first failure. **Ask for the failing stage
@@ -164,7 +166,53 @@ de-duplicated run: `SAME_AS.json` present, no `payload.zip`. The payload is
 in the run it names, and `check_raw.py` reads it from a sibling folder of
 that name -- download both under one parent. The check names the pointer it
 followed; a pointer whose target is missing or wrong fails with the files
-named, never passes.
+named, never passes. `run.py restore` downloads both for you.
+
+## Extract, Regenerate and Render: cache misses
+
+Since 073c the extract travels to Render in the Actions cache under
+`extract-<source>-<raw_run_id>-<repo_digest>`, and the run reaches Extract's
+second job under `raw-<source>-<run-id>`. An entry lives **seven days from
+last use**, and the cache hashes the `path` string into the entry's version.
+Most misses are therefore expected, not faults:
+
+**Render exits 2 with `::error No stored extract` and a `::notice`.** The
+extract for that run on this commit is not cached -- never built, aged out,
+or built on another commit (the key carries the repo digest, so a Render
+after a changeset misses until Extract or Regenerate has run on the new
+code). The notice names the exact **Regenerate** dispatch; run it, then
+re-run Render with the same `raw_run_id`. Render never rebuilds anything
+itself (S.8). With `raw_run_id` blank, Render takes the newest entry under
+the prefix and prints its key -- read that line to learn which run and
+commit produced what it rendered.
+
+**Extract's `extract` job fails at `fail-on-cache-miss`.** The `restore` job
+saved nothing (read it: a refusal is exit 2 with the reason), or this is a
+re-run of the second job more than seven days after the first. Re-run the
+whole workflow; the restore job copies from Drive again.
+
+**Extract or Regenerate `restore` is red with `already exists`.** The cache
+hit restored the run and the Drive copy step still ran, or a previous step
+left `out/_raw/<source>/<run-id>/` behind. A restore never overwrites a run
+directory; a fresh runner has an empty root, so this is a workflow-logic
+fault, not a data one.
+
+**Regenerate is red at `extract is the one expected`.** This commit did not
+reproduce `expect_digest` from this run: S.7 is broken, or the digest given
+was another run's or another parser's. The log prints the digest it did
+produce. Nothing is cached, which is the right outcome. Check the digest
+against `REFERENCE-DATA.md` before suspecting the code.
+
+**`Check the extract` red only under Regenerate, green under Extract.**
+Regenerate enforces the gate always; the original run may have been
+dispatched observe-only. A regenerated extract must pass the gate to be
+cached, so this is the gate doing its job -- read the finding.
+
+**Render restored an extract but `verify` refused it as built from another
+run.** `raw_run_id` was pinned, the exact key missed, and a prefix entry
+was taken instead -- which cannot happen with a pinned key, so the cache
+entry itself is wrong: an extract saved under a key naming a different run.
+Report it; do not render from it.
 
 ## Reading the project context
 
@@ -189,7 +237,7 @@ push and the key write sees this for about a minute. Re-fetch both.
 with scope 2 (`drive.readonly`) and confirm with the `touch` refusal test
 before extracting the token.
 
-**Six workflows reference `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET`.** The
+**Five workflows reference `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET`.** The
 secrets have never existed; the lines expand to empty strings and select
 rclone's built-in client, which is the intended path. They are inert, and are
 removed as each workflow is next touched for its own reasons (`SETUP.md`,

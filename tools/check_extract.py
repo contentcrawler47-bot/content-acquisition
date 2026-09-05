@@ -825,6 +825,10 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-unresolved-members", type=int, default=25,
                     help="memberships naming neither an object nor a view "
                          "(measured 15 of 127,588 on 29 August 2026)")
+    ap.add_argument("--expect-digest", default="", metavar="HEX",
+                    help="fail unless the extract's declared content_digest "
+                         "starts with this (Regenerate proving an equality, "
+                         "P.7; goes through bianlib.extract.verify)")
     args = ap.parse_args(argv)
 
     outdir = args.path
@@ -848,6 +852,19 @@ def main(argv=None) -> int:
         check_integrity(doc, result, args)
     except Exception as e:
         result.add(FAIL, "integrity checks ran", f"{type(e).__name__}: {e}")
+    if args.expect_digest:
+        # The consumer's verification, run here as the producer: the same
+        # `verify` Render calls, asked for a specific extract, so a
+        # regenerated extract that differs is refused by the code every
+        # consumer runs rather than by a string comparison of our own.
+        from bianlib import extract as E
+        try:
+            v = E.verify(outdir, expect_digest=args.expect_digest)
+            result.add(PASS, "extract is the one expected",
+                       f"{v['content_digest'][:16]} matches expect_digest "
+                       f"{args.expect_digest[:16]}")
+        except E.ExtractUnreadable as e:
+            result.add(FAIL, "extract is the one expected", str(e))
     return report(result, outdir, doc)
 
 

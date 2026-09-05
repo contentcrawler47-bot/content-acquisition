@@ -1,10 +1,15 @@
 name: Check raw archive target (Google Drive)
 
-# RAW-ARCHIVE validation only. Answers one question: can the Acquire workflow's
-# archive job reach Drive with these credentials, and what is under raw/?
+# RAW-ARCHIVE validation only. Answers two questions: can the Acquire workflow's
+# archive job reach Drive with these credentials, and what is under raw/ --
+# and, with `pointers` on (the default since 073c), does every de-duplicated
+# run still point at a sibling holder with the same raw digest (R11)? The
+# sweep copies each run's RECORD files only, never payload.zip, so it costs a
+# few hundred kilobytes for the whole archive. A pointed-to run that has been
+# deleted is a finding here and nowhere else until the Health check (075).
 #
-# Touches no source. A red run here always means a Drive problem -- use
-# "Acquire -- BIAN v14" with archive turned off to test acquisition alone.
+# Touches no source. A red run here always means a Drive or archive problem --
+# use "Acquire -- BIAN v14" with archive turned off to test acquisition alone.
 # Prints the Drive quota, which retention decisions need and nothing else
 # records.
 
@@ -13,6 +18,11 @@ name: Check raw archive target (Google Drive)
 # PR can run a workflow in this repo (D-14).
 on:
   workflow_dispatch:
+    inputs:
+      pointers:
+        description: Also sweep every pointer in the archive against its target
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -62,16 +72,17 @@ jobs:
         env:
           RCLONE_CONFIG_GDRIVE_TYPE: drive
           RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
-          RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
-          RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-        run: python3 run.py check-raw-target
+        run: |
+          python3 run.py check-raw-target ${{ inputs.pointers && '--pointers' || '' }}
 
       - name: Explain a failure
         if: failure()
         run: |
-          echo "::error title=Drive check failed::This is a PUBLISHING problem, not a source problem."
-          echo "  Missing credentials -> add GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_TOKEN"
+          echo "::error title=Drive check failed::This is an ARCHIVE problem, not a source problem."
+          echo "  Missing credentials -> add GDRIVE_TOKEN"
           echo "  Rejected credentials -> the OAuth token expired or was revoked;"
           echo "                          re-run 'rclone config' and update GDRIVE_TOKEN"
+          echo "  Pointer finding     -> a de-duplicated run's target is absent, is itself a pointer, or"
+          echo "                          has a different raw digest; never delete a run another run points to"
           echo "Acquisition is unaffected -- run Acquire with archive: false to test it alone."

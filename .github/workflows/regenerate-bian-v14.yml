@@ -1,42 +1,36 @@
-name: Extract — BIAN v14 (stage 3)
+name: Regenerate — BIAN v14 (stage 3)
 
-# STAGE 3 only: parse an ARCHIVED acquisition run into stored data. Fetches
-# nothing from the source, renders nothing, filters nothing, publishes nothing.
+# REGENERATION (P.7): rebuild an extract from its ARCHIVED run and prove it
+# equal to what the original run produced, then put it back in the Actions
+# cache for Render. Fetches nothing from the source, renders nothing,
+# publishes nothing.
 #
-# Acquire is the sole fetcher (R10, P.2). Since 073c this workflow consumes a
-# run BY ID: `raw_run_id`, or the newest archived run when blank. The extract
-# names the bytes it was built from (`extract.run.raw_run_id`) and the code
-# that fetched them, and re-parsing the same run on the same commit must
-# reproduce its content digest (S.7). The acceptance test for this arrangement
-# is the golden run: 33929539288-1 reproduces a82abbd7e52e8558.
+# This is the workflow the Render workflow's cache-miss notice names (S.8).
+# Cache entries live seven days from last use; a stage never regenerates its
+# own upstream, so when Render finds no extract it stops and says to run this.
 #
-# Two JOBS, deliberately. `restore` runs under the `drive` Environment and is
-# the only job here that can see Drive credentials: it resolves the run, tries
-# the Actions cache under the run's exact key first (the entry the Acquire
-# workflow saved, if it is under seven days old), and otherwise copies the run
-# from raw/<source>/<run-id>/ on Drive -- together with the run it points to,
-# as a sibling, when it is de-duplicated (R11) -- verifies it against its own
-# RAW.sha256, and caches it. `extract` references NO secrets, so a red extract
-# is always a code or data problem: a red `Check the run` is a restored run
-# that does not verify or is not complete; a red `Build the extract` is the
-# parser or a run that no longer matches its own manifest; a red `Check the
-# extract` is the gate or a floor.
+# It mirrors the Extract workflow with two differences. The run is restored
+# from DRIVE ONLY -- never from the cache -- because the point is to show the
+# retained input plus this commit reproduce the extract, not that a cached
+# copy is still there (the raw entry IS refreshed afterwards, as transport to
+# the extract job and for the next consumer). And `expect_digest`, when given,
+# is checked THROUGH `bianlib.extract.verify` -- the same code Render runs --
+# so a regenerated extract that differs from the record is refused by the
+# consumer's own check, and is not cached. Blank `expect_digest` regenerates
+# and caches without proving an equality; the log then carries the digest for
+# the record.
 #
-# Cache transport (DESIGN-OBSERVABILITY 9.5): exact keys, no restore-keys, and
-# the SAME path string on every save and restore of a key -- the cache hashes
-# the path into the entry's version, so a different string is a miss.
+# Two JOBS, as in Extract: `restore` under the `drive` Environment is the
+# only job that can see Drive credentials; `extract` references NO secrets.
+# Cache keys and paths are Extract's, exactly (DESIGN-OBSERVABILITY 9.5):
 #   raw     : raw-bian-v14-<raw_run_id>          path out/_raw/bian-v14
 #   extract : extract-bian-v14-<raw_run_id>-<repo_digest>
 #                                                path out/_extract/bian-v14
-# The extract key names the code that built it, so a Render on a later commit
-# misses and is told to Regenerate rather than reading an extract another
-# commit made. Nothing here uploads an artifact: the extract lives in the
-# cache, which has no public read path, and `tools/check_workflows.py`
-# refuses any artifact under out/_raw or out/_extract.
+# Nothing here uploads an artifact.
 #
-# The extract's mode is the run's (R9): `model-only` runs carry the shards,
-# index files and the gate's sample; `full` runs also carry every declared
-# view page, stored as geometry. There is no mode input here any more.
+# The gate ENFORCES here, always: a regenerated extract that would not pass
+# the gate is not the extract Render should read, whatever the original run
+# was dispatched with.
 #
 # Reports counts, sizes and digests only, never acquired text: Actions logs
 # on a public repo are world-readable.
@@ -49,30 +43,23 @@ on:
     inputs:
       raw_run_id:
         description: >-
-          Archived acquisition run to extract, e.g. 33929539288-1. Blank means
-          the newest archived run under raw/bian-v14/ on Drive.
+          Archived acquisition run to regenerate the extract of, e.g.
+          33929539288-1. Blank means the newest archived run under
+          raw/bian-v14/ on Drive.
         required: false
-      require_schema:
-        description: Fail if jsonschema is unavailable
-        type: boolean
-        default: true
-      gate_observe_only:
+      expect_digest:
         description: >-
-          Record source-gate findings without failing on them, including
-          bound breaches. Fetch, parse and schema findings still fail either
-          way. Default is FALSE: the thresholds were set from measurement in
-          changeset 064 and the gate enforces. Turn this on to measure a new
-          landscape version before deciding its numbers, not to get a red run
-          past. An observe-only extract is NOT cached: Render must never
-          restore one.
-        type: boolean
-        default: false
+          Optional. The content digest the original extract of this run had
+          (16 or 64 hex), e.g. a82abbd7e52e8558 for the golden run. When
+          given, the regenerated extract must declare it or the run is red
+          and nothing is cached.
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: extract-bian-v14
+  group: regenerate-bian-v14
   cancel-in-progress: true
 
 env:
@@ -115,7 +102,7 @@ env:
 
 jobs:
   restore:
-    name: Can we bring the archived run back, verified?
+    name: Can we bring the archived run back from Drive, verified?
     runs-on: ubuntu-24.04
     # Drive credentials live in this Environment (A.3/D-11); a job
     # without it cannot see them.
@@ -167,23 +154,11 @@ jobs:
         run: |
           python3 run.py restore "$SOURCE_ID" --run-id "${{ inputs.raw_run_id }}" --resolve-only
 
-      # Cache first: the Acquire workflow saved this run under exactly this
-      # key when it acquired it, and an entry lives seven days from last use.
-      # A hit is the run as written, plain files; a miss is the normal case
-      # for any run older than a week and costs one Drive copy.
-      - name: Take the run from the Actions cache, if it is there
-        id: raw-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: ${{ env.RAW_CACHE_PATH }}
-          key: raw-bian-v14-${{ steps.resolve.outputs.raw_run_id }}
-
-      # Drive otherwise: the run folder and, for a de-duplicated run, the
+      # Drive, always: the run folder and, for a de-duplicated run, the
       # folder it points to, side by side under out/_raw/bian-v14/. Each is
       # verified against its own RAW.sha256 before this step exits 0, so
       # nothing that fails to verify is ever cached under the run's key.
-      - name: Otherwise copy the run from Drive and verify it
-        if: steps.raw-cache.outputs.cache-hit != 'true'
+      - name: Copy the run from Drive and verify it
         env:
           RCLONE_CONFIG_GDRIVE_TYPE: drive
           RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
@@ -191,8 +166,20 @@ jobs:
         run: |
           python3 run.py restore "$SOURCE_ID" --run-id "${{ steps.resolve.outputs.raw_run_id }}"
 
+      # The cache is the transport to the extract job. Saving over an
+      # existing entry is a warning, not a save; look first, and take the
+      # existing entry -- Acquire's or Extract's, verified when saved -- when
+      # there is one.
+      - name: Is the run already cached?
+        id: have-raw
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ env.RAW_CACHE_PATH }}
+          key: raw-bian-v14-${{ steps.resolve.outputs.raw_run_id }}
+          lookup-only: true
+
       - name: Hand the run to the extract job (Actions cache)
-        if: steps.raw-cache.outputs.cache-hit != 'true'
+        if: steps.have-raw.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ env.RAW_CACHE_PATH }}
@@ -208,7 +195,7 @@ jobs:
           echo "  rejected credentials -> the OAuth token expired; re-run 'rclone config', update GDRIVE_TOKEN"
 
   extract:
-    name: Can we store the archived landscape's model as data?
+    name: Does the archived run plus this commit reproduce the extract?
     needs: restore
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -260,20 +247,23 @@ jobs:
         run: |
           python3 tools/check_raw.py "$RUN_DIR" --require-complete
 
-      - name: Build the extract
+      - name: Rebuild the extract
         run: |
           python3 run.py extract "$SOURCE_ID" --run-dir "$RUN_DIR" \
             --gate-max-share "$GATE_MAX_SHARE" \
             --gate-max-absolute "$GATE_MAX_ABSOLUTE" \
-            --gate-max-total-share "$GATE_MAX_TOTAL_SHARE" \
-            ${{ inputs.gate_observe_only && '--gate-observe-only' || '' }}
+            --gate-max-total-share "$GATE_MAX_TOTAL_SHARE"
 
-      - name: Check the extract
+      # Every check Extract runs, plus the equality: with `expect_digest` the
+      # extract must declare that content digest, checked through
+      # `bianlib.extract.verify` -- the consumer's own verification -- so the
+      # proof is the same code Render will run against the cached entry.
+      - name: Check the extract, and that it is the one expected
         run: |
           python3 tools/check_extract.py "$EXTRACT_CACHE_PATH" \
-            ${{ inputs.require_schema && '--require-schema' || '' }} \
+            --require-schema \
             --require-gate \
-            ${{ inputs.gate_observe_only && '--allow-observe-only' || '' }} \
+            ${{ inputs.expect_digest && format('--expect-digest ''{0}''', inputs.expect_digest) || '' }} \
             --canary-id "$CANARY_ID" \
             --canary-name "$CANARY_NAME" \
             --min-objects "$MIN_OBJECTS" \
@@ -294,19 +284,17 @@ jobs:
       # a re-run on the same run and commit is silent about it.
       - name: Is this extract already cached?
         id: have
-        if: ${{ !inputs.gate_observe_only }}
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ env.EXTRACT_CACHE_PATH }}
           key: ${{ steps.key.outputs.key }}
           lookup-only: true
 
-      # Only a checked extract is cached: Render verifies files against the
-      # sidecar on restore, not the content against the gate, so this step
-      # running after `Check the extract` is what makes a restored extract
-      # trustworthy. An observe-only extract is never cached.
-      - name: Keep the extract for Render (Actions cache)
-        if: ${{ !inputs.gate_observe_only && steps.have.outputs.cache-hit != 'true' }}
+      # Only a checked, expected extract is cached: a red check above means
+      # this step never runs and Render keeps missing, which is the honest
+      # outcome -- the record and the rebuild disagree, and the log says so.
+      - name: Repopulate the cache for Render
+        if: steps.have.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ env.EXTRACT_CACHE_PATH }}
@@ -315,8 +303,9 @@ jobs:
       - name: Explain a failure
         if: failure()
         run: |
-          echo "::error title=Extract failed::A red EXTRACT is a code or data problem; this job has no credentials and fetched nothing."
+          echo "::error title=Regenerate failed::A red REGENERATE is a code or data problem; this job has no credentials and fetched nothing. Nothing was cached."
           echo "  cache miss         -> the restore job saved nothing, or this is a re-run more than 7 days later; re-run the whole workflow"
           echo "  Check the run      -> the restored run does not verify or is not complete; 'Check raw archive target' lists and sweeps the archive"
-          echo "  Build the extract  -> the parser, or a run that no longer matches its own manifest"
-          echo "  Check the extract  -> the gate or a floor; read the finding, never widen the bound"
+          echo "  Rebuild            -> the parser, or a run that no longer matches its own manifest"
+          echo "  not the one expected -> this commit does not reproduce expect_digest from this run (S.7 broken, or the wrong digest was given); the log prints the digest it did produce"
+          echo "  gate or floor      -> read the finding, never widen the bound"

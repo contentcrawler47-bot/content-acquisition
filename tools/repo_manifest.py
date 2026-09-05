@@ -9,6 +9,7 @@ given and nobody notices until something behaves oddly.
     python3 tools/repo_manifest.py --write     regenerate MANIFEST.sha256
     python3 tools/repo_manifest.py --verify    check the repo against it
     python3 tools/repo_manifest.py --print     fingerprint only, for pasting
+    python3 tools/repo_manifest.py --digest    the digest alone (cache keys)
 
 Two hashes per file:
 
@@ -231,6 +232,9 @@ def main() -> int:
     g.add_argument("--verify", action="store_true", help="check against it")
     g.add_argument("--print", dest="show", action="store_true",
                    help="print a fingerprint for pasting")
+    g.add_argument("--digest", action="store_true",
+                   help="print only the digest of the tree on disk, for a "
+                        "workflow to key a cache entry on")
     ap.add_argument("--strict", action="store_true",
                     help="unexpected or whitespace-only differences also fail")
     ap.add_argument("--exact", action="store_true",
@@ -242,6 +246,9 @@ def main() -> int:
         return cmd_write()
     if args.show:
         return cmd_print()
+    if args.digest:
+        print(digest_of(build()))
+        return 0
     return cmd_verify(args.strict, args.exact)
 
 

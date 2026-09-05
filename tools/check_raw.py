@@ -4,6 +4,7 @@ Check a stored acquisition run: was it finished, is it intact, is it whole.
 
     python3 tools/check_raw.py out/_raw/bian-v14/<run-id>
     python3 tools/check_raw.py out/_raw/bian-v14/<run-id> --require-complete
+    python3 tools/check_raw.py out/_raw/bian-v14 --pointers
 
 Three questions, in the order they can be answered:
 
@@ -29,6 +30,13 @@ that is absent or wrong is reported as absent or mismatched files, never as a
 pass. When ARCHIVED.json is present, the run digest it recorded is compared
 with the one recomputed here; a difference is a finding.
 
+`--pointers` takes an ARCHIVE ROOT instead -- run folders side by side, as
+downloaded, or their record files alone -- and sweeps every pointer in it:
+target present as a sibling, not itself a pointer, same raw digest as the
+pointer recomputes and records (R11). It reads no payload bytes, so the
+records of the whole archive suffice; **Check raw archive target** runs it
+that way from CI.
+
 Counts carry denominators throughout. Prints paths, statuses and digests only,
 never content: logs on a public repo are world-readable.
 """
@@ -52,9 +60,21 @@ def main() -> int:
     ap.add_argument("run_dir", type=Path)
     ap.add_argument("--require-complete", action="store_true",
                     help="fail unless run.json state is 'complete'")
+    ap.add_argument("--pointers", action="store_true",
+                    help="treat run_dir as an archive ROOT and sweep every "
+                         "pointer in it (R11); reads records only")
     args = ap.parse_args()
     run_dir: Path = args.run_dir
     failures, warnings = [], []
+
+    if args.pointers:
+        from core.cli import print_pointer_sweep
+        print("=" * 70)
+        print(f"  Pointer sweep: {run_dir}")
+        print("=" * 70 + "\n")
+        clean = print_pointer_sweep(A.check_pointers(run_dir))
+        print("\n  RESULT: " + ("PASS" if clean else "FAIL"))
+        return 0 if clean else 1
 
     print("=" * 70)
     print(f"  Acquisition run check: {run_dir}")

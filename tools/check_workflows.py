@@ -74,16 +74,12 @@ PERSIST_CREDENTIALS_OK = {
     "mirror-context.yml:mirror": "pushes the context branch",
 }
 
-# Artifact uploads of Class-B content still in the repo. Acquire's went at
-# 073b, when the Actions cache replaced the artifact as its inter-job
-# transport (D-3); Extract's two go at 073c, when it stops acquiring (R10)
-# and Render restores the extract from the cache.
-CLASS_B_ARTIFACTS_OK = {
-    "extract-bian-v14.yml:raw-${{ env.SOURCE_ID }}-${{ env.RUN_ID }}":
-        "this workflow stops acquiring at 073c (R10)",
-    "extract-bian-v14.yml:extract-${{ env.SOURCE_ID }}":
-        "read by Render; becomes a cache restore at 073c",
-}
+# Artifact uploads of Class-B content still in the repo: none. Acquire's
+# went at 073b, when the Actions cache replaced the artifact as its inter-job
+# transport (D-3); Extract's two went at 073c, when it stopped acquiring (R10)
+# and Render became a cache restore. The table stays so the next one has to
+# be declared here, with the changeset that removes it.
+CLASS_B_ARTIFACTS_OK: dict[str, str] = {}
 
 ALLOWED_TRIGGERS = {"workflow_dispatch", "schedule", "workflow_call", "workflow_run"}
 

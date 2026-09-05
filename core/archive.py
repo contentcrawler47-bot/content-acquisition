@@ -62,6 +62,13 @@ Deleting a folder rclone made is safe; creating one by hand is not.
 
 Quota is printed from `rclone about` on every archive and every target check.
 
+The consumer side (073c) lives here too, because it is the only other Drive
+code the raw archive has: `resolve_run` names the run a consumer means (the
+newest archived run by default, P.2), `restore_run` copies it -- and a
+pointer's target as a sibling -- into a local root and verifies each folder,
+and `fetch_records` copies every run's record files without payload bytes so
+the pointer sweep can cover the whole archive cheaply.
+
 Reports counts, sizes, paths and digests only, never content.
 """
 
@@ -432,6 +439,125 @@ def archive(run_dir: Path, source_id: str, dry_run: bool = False) -> dict:
         return summary
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+# --- the consumer side (073c; R10, P.2) -------------------------------------
+
+def resolve_run(source_id: str, run_id: str | None = None) -> dict:
+    """Which archived run a consumer means, and where its payload bytes are.
+
+    `run_id` empty means the newest archived run (P.2's default; from Drive
+    until `.runs/INDEX.jsonl` exists at 074). Returns
+    {run_id, state, payload_run_id, pointer} where `payload_run_id` is the
+    run holding the bytes -- the run itself, or the one its SAME_AS.json
+    names. Raises ArchiveError when the run is absent, incomplete, legacy, or
+    a pointer whose target is not an archived holder: a consumer never reads
+    through a broken pointer.
+    """
+    states = list_runs(source_id).get(source_id, {})
+    if not run_id:
+        archived = sorted((r for r, st in states.items() if st == "archived"),
+                          key=_run_order, reverse=True)
+        if not archived:
+            raise ArchiveError(
+                f"no archived run under {REMOTE}:{ROOT}/{source_id}/ -- "
+                f"run Acquire first")
+        run_id = archived[0]
+    state = states.get(run_id, "absent")
+    if state != "archived":
+        raise ArchiveError(
+            f"{destination(source_id, run_id)} is {state}, not an archived "
+            f"run" + (" (no ARCHIVED.json: an interrupted copy)"
+                      if state == "incomplete" else ""))
+    dest = destination(source_id, run_id)
+    via = remote_pointer(dest)
+    payload = via or run_id
+    if via:
+        tstate = states.get(via, "absent")
+        if tstate != "archived":
+            raise ArchiveError(
+                f"{run_id} points to {via}, which is {tstate}, not archived")
+        if remote_pointer(destination(source_id, via)):
+            raise ArchiveError(
+                f"{run_id} points to {via}, which is itself a pointer; "
+                f"pointers are one hop")
+    return {"run_id": run_id, "state": state, "payload_run_id": payload,
+            "pointer": bool(via)}
+
+
+def restore_run(source_id: str, run_id: str, dest_root: Path) -> dict:
+    """Copy one archived run -- and, for a pointer, its target as a SIBLING
+    -- from Drive into `dest_root/<run-id>/`, then verify each folder against
+    its own sidecar. The folders must not already exist: a restore never
+    overwrites a run directory, cached or written.
+
+    Returns the resolved run plus {folders, files_verified, payload_via}.
+    Raises ArchiveError on a folder that does not verify; nothing partial is
+    left for a later step to trust, because the caller caches what it gets.
+    """
+    resolved = resolve_run(source_id, run_id)
+    folders = [resolved["run_id"]]
+    if resolved["pointer"]:
+        folders.append(resolved["payload_run_id"])
+    for name in folders:
+        if (dest_root / name).exists():
+            raise ArchiveError(
+                f"{dest_root / name} already exists; a run directory is "
+                f"never overwritten. Restore into an empty root.")
+    dest_root.mkdir(parents=True, exist_ok=True)
+    verified = 0
+    try:
+        for name in folders:
+            code, _, err = _run("copy", "--checksum",
+                                destination(source_id, name),
+                                str(dest_root / name))
+            if code != 0:
+                raise ArchiveError(
+                    f"rclone copy of {name} failed (exit {code}): "
+                    f"{_last_line(err)}")
+        for name in reversed(folders):          # the target first, so the
+            try:                                # pointer reads through it
+                v = A.verify_run(dest_root / name)
+            except A.RunUnreadable as e:
+                raise ArchiveError(f"restored {name} is unreadable: {e}") from e
+            if not v["ok"]:
+                raise ArchiveError(
+                    f"restored {name} does not verify against its own "
+                    f"{A.SIDECAR_FILE}: {len(v['files_mismatched'])} "
+                    f"mismatched, {len(v['files_absent'])} absent, "
+                    f"{len(v['files_stray'])} stray")
+            verified += v["files_verified"]
+    except Exception:
+        for name in folders:
+            shutil.rmtree(dest_root / name, ignore_errors=True)
+        raise
+    via = A.verify_run(dest_root / resolved["run_id"])["payload_via"]
+    resolved.update(folders=folders, files_verified=verified, payload_via=via)
+    return resolved
+
+
+#: The archive files a pointer sweep needs -- every record, never the bytes.
+RECORD_NAMES = (A.RUN_FILE, A.MANIFEST_FILE, A.SIDECAR_FILE, MARKER, SAME_AS)
+
+
+def fetch_records(source_id: str, dest_root: Path) -> int:
+    """Copy every run's RECORD files (no payload.zip) under the source's
+    archive root into `dest_root/<run-id>/`, so `bianlib.acquire
+    .check_pointers` can sweep the whole archive from a few hundred
+    kilobytes. Returns the number of run folders copied."""
+    dest_root.mkdir(parents=True, exist_ok=True)
+    args = ["copy", "--checksum", f"{REMOTE}:{ROOT}/{source_id}",
+            str(dest_root)]
+    for name in RECORD_NAMES:
+        args += ["--include", f"/*/{name}"]
+    code, _, err = _run(*args)
+    if code == RCLONE_NOT_FOUND:
+        return 0
+    if code != 0:
+        raise ArchiveError(
+            f"rclone copy of archive records failed (exit {code}): "
+            f"{_last_line(err)}")
+    return sum(1 for p in dest_root.iterdir() if p.is_dir())
 
 
 def check_target() -> list[tuple[bool, str]]:

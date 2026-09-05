@@ -11,6 +11,7 @@ sources cannot break each other by being added or removed.
     python run.py extract bian             # STAGE 1: store the model as data
     python run.py acquire bian --mode full # retain raw artifacts + provenance
     python run.py archive bian --run-id X  # copy that run to Drive, immutably
+    python run.py restore bian [--run-id X] # copy an archived run back (R10)
     python run.py publish bian [--dry-run]  # CAN WE PUBLISH? (Drive only)
     python run.py check-publish             # Drive credentials/reachability
     python run.py run bian [--publish]      # harvest + validate (+ publish)
@@ -257,24 +258,117 @@ def cmd_acquire(sources, args) -> int:
     return 0 if run["state"] == "complete" else 1
 
 
-def cmd_check_raw_target(_sources, _args) -> int:
+def cmd_check_raw_target(_sources, args) -> int:
     """Validate the RAW-ARCHIVE half only: credentials, rclone, the raw root.
 
     Separate from `check-publish` as `check-publish` is from `validate`, so
     a red archive is never mistaken for a red acquisition. Prints the Drive
     quota, which a retention decision needs and no other check records.
+
+    `--pointers` adds the archive-wide sweep (R11): every run's RECORD files
+    are copied locally -- never payload.zip -- and `bianlib.acquire
+    .check_pointers` confirms each pointer names a sibling holder with the
+    same raw digest. A pointed-to run that has gone is a finding here and
+    nowhere else until the Health check workflow (075).
     """
     from . import archive as archive_mod
+    from bianlib import acquire as A
     print("\n=== Raw archive target validation (Google Drive) ===\n", flush=True)
     lines = archive_mod.check_target()
     for ok, msg in lines:
         print(f"  [{'PASS' if ok else 'FAIL'}] {msg}", flush=True)
-    if all(ok for ok, _ in lines):
+    healthy = all(ok for ok, _ in lines)
+    if healthy and getattr(args, "pointers", False):
+        print("\n=== Pointer sweep over the archive records ===\n", flush=True)
+        try:
+            runs = archive_mod.list_runs()
+        except archive_mod.ArchiveError as e:
+            print(f"  [FAIL] Drive unreachable: {e}", flush=True)
+            return 1
+        for sid in sorted(runs):
+            root = RAW_OUT / "_records" / sid
+            try:
+                n = archive_mod.fetch_records(sid, root)
+            except archive_mod.ArchiveError as e:
+                print(f"  [FAIL] {sid}: {e}", flush=True)
+                healthy = False
+                continue
+            print(f"  {sid}: records of {n} run folder(s) copied "
+                  f"(no {A.PAYLOAD_FILE})", flush=True)
+            healthy = print_pointer_sweep(A.check_pointers(root)) and healthy
+    if healthy:
         print("\n  RESULT: raw archive target is healthy.", flush=True)
         return 0
     print("\n  This is an ARCHIVE problem, not a source problem. Acquisition "
           "itself references no Drive credentials.", flush=True)
     return 1
+
+
+def print_pointer_sweep(sweep: dict) -> bool:
+    """Print a `check_pointers` result as PASS/FAIL lines; True when clean.
+    Shared with tools/check_raw.py --pointers so the two read alike."""
+    print(f"  runs {sweep['runs']}: holders {sweep['holders']}, pointers "
+          f"{sweep['pointers']}, distinct targets {len(sweep['pointed_to'])}")
+    for target in sorted(sweep["pointed_to"]):
+        print(f"    target {target}: must not be deleted")
+    for f in sweep["findings"]:
+        print(f"  [FAIL] {f}")
+    if not sweep["findings"]:
+        print(f"  [PASS] every pointer names a sibling holder with the same "
+              f"raw digest ({sweep['pointers']} of {sweep['pointers']})")
+    return not sweep["findings"]
+
+
+def cmd_restore(sources, args) -> int:
+    """Copy an archived run from Drive into out/_raw/<source>/ (R10, P.2).
+
+    The consumer half of the archive: Extract and Regenerate read a run by
+    id and never fetch from the source. `--run-id` empty means the newest
+    archived run. A de-duplicated run is restored together with the run it
+    points to, as siblings, so every reader sees the payload through the
+    pointer. `--resolve-only` prints the resolution and copies nothing, so a
+    workflow can try the Actions cache under the resolved id first.
+
+    Prints `raw_run_id=` and `payload_run_id=` lines and, when GITHUB_OUTPUT
+    is set, writes the same two names there. Exit 2 when the run cannot be
+    resolved or is refused; 1 for any other Drive failure.
+    """
+    from . import archive as archive_mod
+    s = sources[args.source]
+    root = RAW_OUT / s.id
+    try:
+        archive_mod.preflight()
+        if args.resolve_only:
+            r = archive_mod.resolve_run(s.id, args.run_id or None)
+            print(f"Resolved {s} run {r['run_id']}"
+                  + (f" -> pointer to {r['payload_run_id']}"
+                     if r["pointer"] else " (holds its payload)"), flush=True)
+        else:
+            r = archive_mod.restore_run(s.id, args.run_id or None, root)
+            print(f"Restored {s} run {r['run_id']} -> {root / r['run_id']}"
+                  + (f"  with its target {r['payload_run_id']} as a sibling"
+                     if r["pointer"] else ""), flush=True)
+            print(f"  verified  : {r['files_verified']} sidecar lines across "
+                  f"{len(r['folders'])} folder(s)"
+                  + (f"; payload read via {r['payload_via']}"
+                     if r["payload_via"] else ""), flush=True)
+    except archive_mod.PublishError as e:
+        print(f"\n  {e}", file=sys.stderr)
+        return 1
+    except archive_mod.ArchiveError as e:
+        msg = str(e)
+        print(f"\n  {msg}", file=sys.stderr)
+        refused = ("not an archived run" in msg or "no archived run" in msg
+                   or "already exists" in msg or "points to" in msg)
+        return 2 if refused else 1
+    print(f"  raw_run_id={r['run_id']}")
+    print(f"  payload_run_id={r['payload_run_id']}")
+    out_path = os.environ.get("GITHUB_OUTPUT")
+    if out_path:
+        with open(out_path, "a", encoding="utf-8") as fh:
+            fh.write(f"raw_run_id={r['run_id']}\n")
+            fh.write(f"payload_run_id={r['payload_run_id']}\n")
+    return 0
 
 
 def cmd_archive(sources, args) -> int:
@@ -328,8 +422,11 @@ def cmd_render(sources, args) -> int:
     outdir = EXTRACT_OUT / s.id
     if not (outdir / extract_mod.INDEX_FILE).is_file():
         print(f"No extract at {outdir}.", file=sys.stderr)
-        print(f"  Run: python3 run.py extract {s.id} --run-dir "
+        print(f"  Locally: python3 run.py extract {s.id} --run-dir "
               f"out/_raw/{s.id}/<run-id>", file=sys.stderr)
+        print("  In CI: the Render workflow restores the extract from the "
+              "Actions cache; a miss names the Regenerate dispatch (S.8).",
+              file=sys.stderr)
         print("  Stage 2 reads stored data and never fetches; this is not a "
               "condition it can recover from.", file=sys.stderr)
         return 2
@@ -341,12 +438,15 @@ def cmd_render(sources, args) -> int:
     # forget; here it cannot be skipped. A mismatch is a failure of this
     # stage, not a condition to read through.
     try:
-        verified = extract_mod.verify(outdir)
+        verified = extract_mod.verify(
+            outdir, expect_raw_run_id=args.expect_raw_run_id or None)
     except extract_mod.ExtractUnreadable as e:
         print(f"\n  cannot read the extract: {e}", file=sys.stderr)
         return 1
     print(f"  verified  : {verified['files']} files match "
-          f"{extract_mod.SIDECAR_FILE}")
+          f"{extract_mod.SIDECAR_FILE}"
+          + (f"; built from run {verified['raw_run_id']} as asked"
+             if args.expect_raw_run_id else ""))
     doc = extract_mod.read(outdir, verify_first=False)
 
     # Say WHICH extract this is before saying anything about its contents. A
@@ -622,6 +722,9 @@ def main(argv=None) -> int:
     rn.add_argument("--add-category", action="append", metavar="CATEGORY",
                     help="EXPERIMENT: also keep this category. Reports only; "
                          "never publishes. Repeatable.")
+    rn.add_argument("--expect-raw-run-id", default=None, metavar="ID",
+                    help="fail unless the extract records this acquisition "
+                         "run as its source (S.6: the identity asked for)")
     rn.add_argument("--drop-category", action="append", metavar="CATEGORY",
                     help="EXPERIMENT: do not keep this category. Reports "
                          "only; never publishes. Repeatable.")
@@ -634,8 +737,19 @@ def main(argv=None) -> int:
                    help="per-probe timeout in seconds")
     sub.add_parser("check-publish",
                    help="check Drive credentials and reachability only")
-    sub.add_parser("check-raw-target",
-                   help="check Drive credentials and the raw archive root only")
+    crt = sub.add_parser("check-raw-target",
+                         help="check Drive credentials and the raw archive root only")
+    crt.add_argument("--pointers", action="store_true",
+                     help="also sweep every run's records for pointer "
+                          "integrity (R11); copies no payload bytes")
+    rs = with_source(sub.add_parser(
+        "restore", help="copy an archived run from Drive into out/_raw/ "
+                        "(with its pointer target, as siblings)"))
+    rs.add_argument("--run-id", default=None, metavar="ID",
+                    help="the archived run; empty means the newest one")
+    rs.add_argument("--resolve-only", action="store_true",
+                    help="print which run and which payload folder; copy "
+                         "nothing")
     ar = with_source(sub.add_parser(
         "archive", help="copy a finished acquisition run to Drive, immutably"))
     ar.add_argument("--run-id", required=True, metavar="ID",
@@ -659,6 +773,7 @@ def main(argv=None) -> int:
         "publish": cmd_publish, "run": cmd_run, "reindex": cmd_reindex,
         "check-publish": cmd_check_publish,
         "check-raw-target": cmd_check_raw_target, "archive": cmd_archive,
+        "restore": cmd_restore,
     }[args.cmd]
 
     try:

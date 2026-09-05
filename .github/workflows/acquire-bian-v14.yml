@@ -85,9 +85,9 @@ env:
   RUN_DIR: out/_raw/bian-v14/${{ github.run_id }}-${{ github.run_attempt }}
   # Cache transport (DESIGN-OBSERVABILITY 9.5): exact key, no restore-keys,
   # and the SAME path string on save and restore -- the cache hashes the
-  # path into the entry's version, so a different string is a miss. Any
-  # later consumer of this run (Extract at 073c) restores with this key and
-  # this path.
+  # path into the entry's version, so a different string is a miss.
+  # Extract and Regenerate restore this run with this key and this path
+  # (cache first, Drive otherwise) for as long as the entry lives.
   CACHE_KEY: raw-bian-v14-${{ github.run_id }}-${{ github.run_attempt }}
   CACHE_PATH: out/_raw/bian-v14
 

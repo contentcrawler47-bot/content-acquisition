@@ -1,12 +1,14 @@
 name: Render — BIAN v14 (stage 2)
 
 # STAGE 2: read a stored extract, apply the allowlist, report what would be
-# published. Makes NO network requests at all — not to bian.org, not to Drive.
+# published. Makes NO network requests at all — not to bian.org, not to Drive,
+# not to the Actions API.
 #
-# References no Google Drive secrets and fetches no source, so a red run here
-# is a SELECTION or CODE problem and nothing else. That separation is the same
-# one the Extract and Validate workflows keep, and it is what makes a failure
-# locatable without reading the log.
+# References no secrets and fetches no source, so a red run here is a
+# SELECTION or CODE problem, or a MISSING INPUT that this workflow says how to
+# regenerate, and nothing else. That separation is the same one the Extract
+# and Validate workflows keep, and it is what makes a failure locatable
+# without reading the log.
 #
 # WHAT THIS IS FOR
 #   Changing what gets published used to mean another pass over someone else's
@@ -23,17 +25,27 @@ name: Render — BIAN v14 (stage 2)
 #   than the last, because a capability with no workflow behind it has not
 #   been shipped — that mistake was made once here already.
 #
-# INPUT: a stored extract — by default the most recent successful Extract
-# run's, or a run you pin. There is no other source. A `fresh` option that
-# fetched from bian.org existed until changeset 073b; it went because Acquire
-# is the sole fetcher (R10), and because it had been invoking `extract`
-# without the `--run-dir` it has required since 070. If there is no stored
-# extract this workflow fails and says so; it never fetches.
+# INPUT: a stored extract, restored from the ACTIONS CACHE (since 073c; it was
+# a CI artifact, downloadable by any GitHub account, until then). The key is
+# extract-bian-v14-<raw_run_id>-<repo_digest> (DESIGN-OBSERVABILITY 9.5):
+# with `raw_run_id` given the key is exact, so the extract of THAT run built
+# by THIS commit is the only thing that can match; blank, the newest entry
+# under the prefix extract-bian-v14- is taken and its key printed, so the log
+# says which run and which commit built what was rendered. The path string
+# must equal Extract's save path exactly -- the cache hashes it into the
+# entry's version.
+#
+# ON A MISS this workflow does not regenerate anything (S.8): it emits
+# `::error` and a `::notice` naming the exact Regenerate dispatch, and exits
+# 2. Regenerating here would put Drive-touching code into a job designed not
+# to have it. Entries live seven days from last use, so a miss after a quiet
+# week is the normal case and costs one Regenerate run.
 #
 # The extract is verified INSIDE `run.py render` before anything is read
-# (every file against EXTRACT.sha256, since 073a). A workflow step doing the
-# same with `sha256sum -c` was removed at 073b: a green step here is not
-# evidence the stage verified, and a second consumer could forget the step.
+# (every file against EXTRACT.sha256, and -- when a run was pinned -- that the
+# extract records that run as its source). A workflow step doing the same with
+# `sha256sum -c` was removed at 073b: a green step here is not evidence the
+# stage verified, and a second consumer could forget the step.
 
 # TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
 # pull_request_target -- the Actions cache is private only while no fork
@@ -41,10 +53,12 @@ name: Render — BIAN v14 (stage 2)
 on:
   workflow_dispatch:
     inputs:
-      run_id:
+      raw_run_id:
         description: >-
-          Optional. Pin a specific "Extract — BIAN v14 (stage 3)" run. Leave
-          blank to use the most recent successful one.
+          Optional. Pin the acquisition run whose extract to render, e.g.
+          33929539288-1 (the extract must have been built on this commit).
+          Blank takes the newest cached extract, whichever run and commit
+          built it, and prints its key.
         required: false
       add_category:
         description: "EXPERIMENT: also keep this category (reports only)"
@@ -55,8 +69,6 @@ on:
 
 permissions:
   contents: read
-  # Only to download a prior run's extract artifact. Nothing here writes.
-  actions: read
 
 concurrency:
   group: render-bian-v14
@@ -64,6 +76,7 @@ concurrency:
 
 env:
   SOURCE_ID: bian-v14
+  EXTRACT_CACHE_PATH: out/_extract/bian-v14
 
 jobs:
   render:
@@ -93,57 +106,66 @@ jobs:
           python3 -m pip install --require-hashes -r requirements.txt
           python3 -m pip install --require-hashes -r requirements-extract.txt
 
-      # Which extract, decided in one place and printed. If nothing is
-      # found, this fails. There is deliberately no fallback — a reuse run
-      # that quietly re-fetched would produce a correct-looking result by a
-      # route nobody asked for, and the log would be the only evidence.
-      - name: Resolve which extract to use
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # Which key, decided in one place and printed. Pinned: exact, this run
+      # and this commit. Blank: a primary key nothing can match, so the
+      # prefix in restore-keys decides -- newest entry first.
+      - name: Name the extract to restore
+        id: key
         run: |
           set -euo pipefail
-          id="${{ inputs.run_id }}"
+          digest=$(python3 tools/repo_manifest.py --digest)
+          id="${{ inputs.raw_run_id }}"
           if [ -n "$id" ]; then
-            echo "  pinned to run $id"
+            echo "key=extract-bian-v14-${id}-${digest}" >> "$GITHUB_OUTPUT"
+            echo "prefix=" >> "$GITHUB_OUTPUT"
+            echo "  pinned: extract-bian-v14-${id}-${digest}"
           else
-            id=$(gh run list --repo "$GITHUB_REPOSITORY" \
-                   --workflow extract-bian-v14.yml --status success \
-                   --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-            if [ -z "$id" ]; then
-              echo "::error title=No stored extract::No successful 'Extract — BIAN v14 (stage 3)' run was found. Run it first; this workflow never fetches."
-              exit 1
-            fi
-            echo "  most recent successful extract run: $id"
+            echo "key=extract-bian-v14-" >> "$GITHUB_OUTPUT"
+            echo "prefix=extract-bian-v14-" >> "$GITHUB_OUTPUT"
+            echo "  newest under prefix extract-bian-v14- (this commit is ${digest})"
           fi
-          echo "EXTRACT_RUN_ID=$id" >> "$GITHUB_ENV"
-          echo "  $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id"
 
-      # v7 to match the two downloads in landscape-bian-v14.yml. Changeset 038
-      # pinned v6 here by oversight; nothing is known to differ, but one repo
-      # should pin one version.
-      - name: Take the extract from that run
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      - name: Take the extract from the Actions cache
+        id: extract-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          name: extract-bian-v14
-          path: out/_extract/bian-v14
-          run-id: ${{ env.EXTRACT_RUN_ID }}
-          github-token: ${{ github.token }}
+          path: ${{ env.EXTRACT_CACHE_PATH }}
+          key: ${{ steps.key.outputs.key }}
+          restore-keys: ${{ steps.key.outputs.prefix }}
 
-      # Verifies the extract against its sidecar before reading it, then
+      # The miss contract (S.8): say what was missing and exactly how to make
+      # it, then refuse. There is deliberately no fallback -- a render that
+      # quietly re-extracted or re-fetched would produce a correct-looking
+      # result by a route nobody asked for, and the log would be the only
+      # evidence.
+      - name: Was there an extract to render?
+        run: |
+          set -euo pipefail
+          matched="${{ steps.extract-cache.outputs.cache-matched-key }}"
+          if [ -z "$matched" ]; then
+            id="${{ inputs.raw_run_id }}"
+            echo "::error title=No stored extract::No cache entry for ${{ steps.key.outputs.key }}${{ steps.key.outputs.prefix && '*' || '' }}. Entries live 7 days from last use; this workflow never fetches or extracts."
+            echo "::notice title=Regenerate it::Dispatch 'Regenerate — BIAN v14 (stage 3)' with raw_run_id=${id:-<blank, for the newest archived run>} and expect_digest=<the extract's content digest, if it is on record; else blank>, then re-run this workflow with the same raw_run_id."
+            exit 2
+          fi
+          echo "  restored ${matched}"
+
+      # Verifies the extract against its sidecar before reading it -- and,
+      # when a run was pinned, that the extract records that run -- then
       # selects. A mismatch is exit 1 naming the file; no extract is exit 2.
       - name: Select
         run: |
           python3 run.py render "$SOURCE_ID" \
+            ${{ inputs.raw_run_id && format('--expect-raw-run-id ''{0}''', inputs.raw_run_id) || '' }} \
             ${{ inputs.add_category && format('--add-category ''{0}''', inputs.add_category) || '' }} \
             ${{ inputs.drop_category && format('--drop-category ''{0}''', inputs.drop_category) || '' }}
 
       - name: Explain a failure
         if: failure()
         run: |
-          echo "::error title=Render failed::This is a SELECTION or CODE problem."
-          echo "  No Drive credentials are used here and no source is fetched."
+          echo "::error title=Render failed::This is a SELECTION or CODE problem, or a missing input named above."
+          echo "  No secrets are used here and no source is fetched."
+          echo "  No stored extract -> the notice above names the Regenerate dispatch."
           echo "  Canary missing    -> the allowlist no longer keeps a known object."
           echo "  Below the floor   -> selection kept fewer objects than min_objects."
-          echo "  No stored extract -> run Extract first."
-          echo "  Extract mismatch  -> a file differs from EXTRACT.sha256; the log names it."
-          echo "  Artifact expired  -> the pinned run is older than 90 days."
+          echo "  Extract mismatch  -> a file differs from EXTRACT.sha256, or the extract was built from another run; the log names it."

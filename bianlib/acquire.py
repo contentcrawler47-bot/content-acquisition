@@ -689,6 +689,84 @@ def pointer_of(run_dir: Path) -> dict | None:
         raise RunUnreadable(f"{path} is not a readable pointer: {e}") from e
 
 
+def check_pointers(root: Path) -> dict:
+    """Sweep an archive root -- run folders side by side -- for pointer
+    integrity (R11: pointers are one hop and a pointed-to run must not go).
+
+    Works from records alone: SAME_AS.json, RAW.sha256 and ARCHIVED.json.
+    No payload bytes are read, so a root holding only the record files of
+    every run (`core.archive.fetch_records`) is enough to sweep the whole
+    archive. For each pointer: the target exists as a sibling, is not itself
+    a pointer, holds a sidecar, and its recomputed run digest equals the
+    pointer's recomputed digest, the digest SAME_AS.json records and the one
+    ARCHIVED.json records. Every holder is counted so the denominators are
+    on record. Returns {runs, holders, pointers, pointed_to, findings}.
+    """
+    root = Path(root)
+    out = {"runs": 0, "holders": 0, "pointers": 0, "pointed_to": set(),
+           "findings": []}
+    if not root.is_dir():
+        out["findings"].append(f"{root} is not a directory")
+        return out
+    folders = sorted(p for p in root.iterdir() if p.is_dir())
+    out["runs"] = len(folders)
+    for run_dir in folders:
+        name = run_dir.name
+        try:
+            ptr = pointer_of(run_dir)
+        except RunUnreadable as e:
+            out["findings"].append(str(e))
+            continue
+        if ptr is None:
+            out["holders"] += 1
+            continue
+        out["pointers"] += 1
+        target = str(ptr["run_id"])
+        out["pointed_to"].add(target)
+        mine = run_digest(run_dir)
+        if not mine:
+            out["findings"].append(f"{name}: pointer without a {SIDECAR_FILE}")
+        if ptr.get("run_digest") and ptr["run_digest"] != mine:
+            out["findings"].append(
+                f"{name}: {SAME_AS_FILE} records {ptr['run_digest'][:16]}, "
+                f"recomputed {mine[:16]}")
+        marker_path = run_dir / MARKER_FILE
+        if marker_path.is_file():
+            try:
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            except ValueError as e:
+                out["findings"].append(f"{name}: {MARKER_FILE} unreadable: {e}")
+                marker = {}
+            if marker.get("same_as") and marker["same_as"] != target:
+                out["findings"].append(
+                    f"{name}: {MARKER_FILE} says same_as {marker['same_as']}, "
+                    f"{SAME_AS_FILE} names {target}")
+            if marker.get("run_digest") and marker["run_digest"] != mine:
+                out["findings"].append(
+                    f"{name}: {MARKER_FILE} records {marker['run_digest'][:16]}, "
+                    f"recomputed {mine[:16]}")
+        tdir = root / target
+        if not tdir.is_dir():
+            out["findings"].append(
+                f"{name}: points to {target}, which is absent from {root}")
+            continue
+        try:
+            if pointer_of(tdir):
+                out["findings"].append(
+                    f"{name}: points to {target}, itself a pointer; one hop")
+        except RunUnreadable as e:
+            out["findings"].append(str(e))
+        theirs = run_digest(tdir)
+        if not theirs:
+            out["findings"].append(
+                f"{name}: target {target} has no {SIDECAR_FILE}")
+        elif theirs != mine:
+            out["findings"].append(
+                f"{name}: target {target} has raw digest {theirs[:16]}, "
+                f"not {mine[:16]}")
+    return out
+
+
 class _Store:
     """Reads a run in whichever form it is in, opening the payload zip once.
 

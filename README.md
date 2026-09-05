@@ -164,9 +164,11 @@ command is reshaped.
 change to the category allowlist both cost another full pass over the source.
 `extract` is the first half of splitting those apart: it parses a retained
 acquisition run into JSON-LD under `out/_extract/<source>/` and applies no
-selection and no rendering at all. It never fetches: the Extract workflow
-acquires first and extracts from the run it just wrote, and the same command
-re-normalises an archived run offline. The extract's `run` block is the
+selection and no rendering at all. It never fetches: since 073c the Extract
+workflow consumes an ARCHIVED run by id -- `raw_run_id`, or the newest run on
+Drive when blank -- restoring it from the Actions cache when Acquire's entry is
+still there and from `raw/<source>/<run-id>/` otherwise, and the same command
+re-normalises a downloaded run offline. The extract's `run` block is the
 acquisition it was built from — `raw_run_id`, `raw_run_state`, and that run's
 own provenance, the commit that fetched the bytes — and its `producer` block
 is the run and commit that built the extract; since the two happen days apart
@@ -179,7 +181,14 @@ acquisitions of unchanged bytes agree. Run `33848524733-1`, downloaded from
 Drive and re-extracted, reproduces the content digest four live runs had
 produced; a consumer reads an extract through `bianlib.extract.read`, which
 verifies every file against `EXTRACT.sha256` first and refuses one that does
-not match.
+not match. The extract itself travels to Render in the Actions cache under
+`extract-<source>-<raw_run_id>-<repo_digest>`: Render restores it, verifies
+it inside the stage, and on a miss refuses with a notice naming the exact
+**Regenerate** dispatch rather than rebuilding anything itself. Regenerate
+restores the run from Drive, rebuilds, checks the result against the digest
+on record through the same `verify`, and repopulates the cache. The golden
+run `33929539288-1` is the acceptance test for all three: it reproduces
+`a82abbd7e52e8558` on every code state that has not changed the parser.
 
 Storing the model unfiltered is the point. Selection belongs to the render
 stage, so adding a category to `INCLUDE_CATEGORIES` becomes a re-render against
@@ -263,12 +272,12 @@ of the runs that just happened. Reindex was once at 04:30 and a source was
 added after it, which would have written a week-stale date every week.
 **Adding or rescheduling a source means checking reindex is still last.**
 
-The remaining eleven workflows are on-demand: **Verify repo contents**, **Apply
+The remaining twelve workflows are on-demand: **Verify repo contents**, **Apply
 changeset**, **Package skills**, **Check publishing target (Google Drive)**,
 **Check raw archive target (Google Drive)**, **Census — BIAN landscape
 counts**, **Acquire — BIAN v14 (stage 2)**, **Extract — BIAN v14 (stage 3)**,
-**Render — BIAN v14 (stage 2)**, **Publish sample to Drive** and **Sample —
-Savings Account diagrams**.
+**Regenerate — BIAN v14 (stage 3)**, **Render — BIAN v14 (stage 2)**,
+**Publish sample to Drive** and **Sample — Savings Account diagrams**.
 
 **No probe workflows remain.** Each was written to answer a specific question
 before a design was committed to, and each was deleted once its findings were
