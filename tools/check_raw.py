@@ -101,8 +101,13 @@ def main() -> int:
         msg = f"run state is {state!r}: {run.get('reason') or 'no reason recorded'}"
         (failures if args.require_complete else warnings).append(msg)
 
+    # The run's identity, over payload lines only: equal for two runs that
+    # fetched the same bytes, whatever their timestamps. This is what
+    # de-duplication compares; the digest of RAW.sha256 as a file is not.
+    print(f"\n  raw digest {A.run_digest(run_dir)[:16] or '(none)'}  "
+          f"(payload lines only; excludes {', '.join(A.RECORD_FILES)})")
     prov = run.get("provenance") or {}
-    print(f"\n  provenance where={prov.get('where')} run={prov.get('run_id')} "
+    print(f"  provenance where={prov.get('where')} run={prov.get('run_id')} "
           f"sha={(prov.get('commit_sha') or '')[:12] or '(none)'} "
           f"repo_digest={prov.get('repo_digest') or '(none)'}"
           + (f" manifest_digest={prov.get('manifest_digest')}"

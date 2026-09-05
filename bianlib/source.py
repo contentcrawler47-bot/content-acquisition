@@ -247,7 +247,7 @@ class BianSource(BaseSource):
         return verdict
 
     def build_extract(self, outdir: Path, run_dir: Path,
-                      run: dict | None = None,
+                      producer: dict | None = None,
                       gate_options: dict | None = None) -> dict:
         """Parse a retained acquisition run and write it as a JSON-LD extract.
 
@@ -264,12 +264,17 @@ class BianSource(BaseSource):
         Asking for geometry a run does not hold would be a request to fetch,
         and fetching is not this stage's job.
 
-        `run` is the CI provenance of THIS run, passed in as data. The
-        acquisition's provenance -- commit SHA, repo digest, run id, state --
-        is read from the run record and carried into the extract as lineage,
-        so a downloaded extract names the bytes it was built from and the code
-        that fetched them (F22 closes here too: robots was checked by the
-        acquisition, and its answer is in the same record).
+        `producer` is the CI provenance of THIS run, passed in as data, and
+        goes into the extract's `producer` block: the run and commit that
+        normalised the bytes. The acquisition's own provenance -- its run,
+        commit and repo digest -- is read from the run record and goes into
+        `run`, with `raw_run_id` and `raw_run_state`, so a downloaded extract
+        names the bytes it was built from, the code that fetched them, and the
+        code that built it, as three separate facts. Before 1.10.0 the block
+        mixed this run's id with the acquisition's commit (F22 closes here
+        too: robots was checked by the acquisition, and its answer is in the
+        same record). Capture time is the record's `finished_at`; this
+        function never reads the clock.
         """
         from bianlib import acquire as A
         from bianlib import extract as E
@@ -317,21 +322,30 @@ class BianSource(BaseSource):
         finally:
             store.close()
 
-        lineage = dict(run or {"where": "local"})
+        # The run's identity, over payload lines only (acquire.run_digest):
+        # what de-duplication compares, printed here so a log names the bytes
+        # an extract was built from without opening the run.
+        raw_digest = A.run_digest(run_dir)
+        print(f"  raw digest: {raw_digest[:16] or 'NONE'}", flush=True)
+
+        lineage = dict(prov)
         lineage.update({
-            "commit_sha": prov.get("commit_sha") or "",
-            "repo_digest": prov.get("repo_digest") or "",
             "raw_run_id": str(record.get("run_id") or ""),
             "raw_run_state": record.get("state") or "",
         })
 
         doc = E.build(model, self.id, mode=mode, insite_models=entries,
                       models_url=models_url, models_tried=tried,
-                      geometry=geometry, run=lineage, gate=gate)
+                      geometry=geometry, run=lineage, gate=gate,
+                      producer=producer,
+                      captured_at=record.get("finished_at") or None)
         summary = E.write(doc, outdir)
 
         status = doc["status"]
         counts = summary["parts"]
+        meta = doc["extract"]
+        print(f"  captured: {meta['captured_at'] or 'NOT RECORDED'}  "
+              f"built: {meta['built_at']}", flush=True)
         print(f"  extract: {counts['objects']} objects, "
               f"{counts['relations']} relations, "
               f"{counts['views']} views, "

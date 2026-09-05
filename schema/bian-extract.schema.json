@@ -62,11 +62,15 @@
       "required": [
        "source_id",
        "base_url",
-       "fetched_at",
+       "built_at",
+       "captured_at",
+       "captured_at_derivation",
        "schema_version",
        "parser_version",
        "mode",
-       "shards"
+       "shards",
+       "run",
+       "producer"
       ],
       "additionalProperties": false,
       "properties": {
@@ -78,9 +82,22 @@
         "type": "string",
         "minLength": 1
        },
-       "fetched_at": {
+       "built_at": {
         "type": "string",
-        "minLength": 10
+        "minLength": 10,
+        "description": "Wall clock of THIS build, processing time. Named fetched_at until 1.10.0, which since changeset 070 -- when the extract began to be built from a retained run -- had described the wrong thing. Not a source time: nothing downstream derives a timestamp from it."
+       },
+       "captured_at": {
+        "type": [
+         "string",
+         "null"
+        ],
+        "description": "Capture time of the run this extract was built from (I2.11): the acquisition record's finished_at, copied, never the clock. Null only when the record carries no finished_at, and check_extract.py fails that. Downstream timestamps that must be reproducible derive from this field, and captured_at_derivation says so."
+       },
+       "captured_at_derivation": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Which field of which record captured_at was taken from, stated in the artifact so a reader need not know the code: bianlib.extract.CAPTURED_AT_DERIVATION."
        },
        "schema_version": {
         "type": "string",
@@ -104,7 +121,7 @@
        },
        "run": {
         "type": "object",
-        "description": "Which CI run produced this extract and, since 1.9.0, which acquisition run it was built from: raw_run_id and raw_run_state name the retained run, commit_sha and repo_digest the code that acquired it. Optional as a block: extracts written before schema 1.5.0 carry no run block, and stage 2 must still read them. Excluded from content_digest by construction, so two runs over identical content agree.",
+        "description": "The ACQUISITION this extract was built from: raw_run_id and raw_run_state name the retained run, and the remaining fields are that run's own provenance from its run.json -- the CI run and commit that fetched the bytes. Before 1.10.0 this block mixed the building run's id with the acquiring commit. Required since 1.10.0; extracts written before schema 1.5.0 carry no run block, and stage 2 reads them without validating. Excluded from content_digest by construction.",
         "required": [
          "where"
         ],
@@ -134,6 +151,15 @@
          "url": {
           "type": "string"
          },
+         "ref": {
+          "type": "string"
+         },
+         "workflow_ref": {
+          "type": "string"
+         },
+         "runner_os": {
+          "type": "string"
+         },
          "commit_sha": {
           "type": "string",
           "description": "The commit that ACQUIRED the run this extract reads, from run.json provenance; empty when acquired outside CI."
@@ -141,6 +167,9 @@
          "repo_digest": {
           "type": "string",
           "description": "The repo digest computed over the tree that acquired the run, from run.json provenance."
+         },
+         "manifest_digest": {
+          "type": "string"
          },
          "raw_run_id": {
           "type": "string",
@@ -154,6 +183,60 @@
            "failed"
           ],
           "description": "run.json state of that run. An extract built from a partial run says so here; the floors in check_extract.py decide whether it is thin enough to fail."
+         }
+        }
+       },
+       "producer": {
+        "type": "object",
+        "description": "The BUILD of this extract: the CI run and commit that normalised the raw run into it, from the same builder the acquisition record uses (core.cli.build_provenance). Since changeset 070 this is a different run from the one under `run`, days apart, and the cache key extract-<source>-<raw_run_id>-<repo_digest> names this commit. where=local when built outside CI, so a sandbox replay can never pass for a run. Excluded from content_digest by construction.",
+        "required": [
+         "where"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "where": {
+          "enum": [
+           "github-actions",
+           "local"
+          ]
+         },
+         "run_id": {
+          "type": "string"
+         },
+         "run_attempt": {
+          "type": "string"
+         },
+         "run_number": {
+          "type": "string"
+         },
+         "workflow": {
+          "type": "string"
+         },
+         "repository": {
+          "type": "string"
+         },
+         "url": {
+          "type": "string"
+         },
+         "ref": {
+          "type": "string"
+         },
+         "workflow_ref": {
+          "type": "string"
+         },
+         "runner_os": {
+          "type": "string"
+         },
+         "commit_sha": {
+          "type": "string",
+          "description": "The commit that BUILT this extract; empty when built outside CI."
+         },
+         "repo_digest": {
+          "type": "string",
+          "description": "The repo digest computed over the tree that built this extract."
+         },
+         "manifest_digest": {
+          "type": "string"
          }
         }
        }

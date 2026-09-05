@@ -92,7 +92,10 @@ def load(outdir: Path) -> tuple[dict, dict]:
     grow two different ideas of the layout.
     """
     from bianlib import extract as E
-    doc = E.read(outdir)
+    # Unverified on purpose: check_parts reports a bad sidecar as a finding
+    # with a denominator. A CONSUMER reads through E.read() with verification
+    # on, and stops.
+    doc = E.read(outdir, verify_first=False)
     raw = {}
     index = json.loads(
         (outdir / E.INDEX_FILE).read_text(encoding="utf-8"))
@@ -597,30 +600,62 @@ def check_integrity(doc: dict, result: Result, args) -> None:
                        f"{value}, floor {floor}")
 
     # Lineage. Since schema 1.9.0 an extract names the retained run it was
-    # built from and the code that acquired it; a field that is declared but
-    # never checked is decoration, so its absence fails here. Older extracts
-    # are exempt by their own version, not by tolerance.
+    # built from and the code that acquired it; since 1.10.0 also the run
+    # and commit that BUILT it (`producer`) and the run's capture time
+    # (`captured_at`, from the record, never the clock). A field that is
+    # declared but never checked is decoration, so absence fails here. One
+    # row, because the three are one property -- the lineage chain readable
+    # from the artifact alone -- and the detail names whichever link is
+    # missing. Older extracts are exempt by their own version, not by
+    # tolerance.
     meta = doc.get("extract", {}) or {}
     run_meta = meta.get("run") or {}
     try:
-        lineage_due = tuple(int(x) for x in
-                            str(meta.get("schema_version", "0")).split(".")
-                            ) >= (1, 9, 0)
+        version = tuple(int(x) for x in
+                        str(meta.get("schema_version", "0")).split("."))
     except ValueError:
-        lineage_due = False
-    if lineage_due:
+        version = (0,)
+    if version >= (1, 9, 0):
+        problems, detail = [], []
         raw_id = run_meta.get("raw_run_id")
         state = run_meta.get("raw_run_state")
         if not raw_id or not state:
-            result.add(FAIL, "extract names its raw run",
-                       f"raw_run_id={raw_id!r} raw_run_state={state!r}")
+            problems.append(f"raw_run_id={raw_id!r} raw_run_state={state!r}")
         else:
             acquired_by = (run_meta.get("commit_sha") or "")[:12] or "(none)"
+            detail.append(f"{raw_id} ({state}), acquired by commit "
+                          f"{acquired_by} at repo digest "
+                          f"{run_meta.get('repo_digest') or '(none)'}")
+        if version >= (1, 10, 0):
+            producer = meta.get("producer") or {}
+            where = producer.get("where")
+            if where not in ("github-actions", "local"):
+                problems.append(f"producer.where={where!r}")
+            elif where == "github-actions" and not (
+                    producer.get("commit_sha") and producer.get("repo_digest")):
+                problems.append("producer names a CI run but not its commit "
+                                "and repo digest")
+            else:
+                built_by = (producer.get("commit_sha") or "")[:12]
+                detail.append(f"built {where}"
+                              + (f" by run {producer.get('run_id')} at commit "
+                                 f"{built_by}" if where == "github-actions"
+                                 else ""))
+            captured = meta.get("captured_at")
+            built = meta.get("built_at") or ""
+            if not captured:
+                problems.append("captured_at is null: the run record has no "
+                                "finished_at")
+            elif built and captured > built:
+                problems.append(f"captured_at {captured} is after built_at "
+                                f"{built}: not a capture time")
+            else:
+                detail.append(f"captured {captured}")
+        if problems:
+            result.add(FAIL, "extract names its lineage", "; ".join(problems))
+        else:
             result.add(PASS if state == "complete" else WARN,
-                       "extract names its raw run",
-                       f"{raw_id} ({state}), acquired by commit "
-                       f"{acquired_by} at repo digest "
-                       f"{run_meta.get('repo_digest') or '(none)'}")
+                       "extract names its lineage", "; ".join(detail))
 
     # The source input gate. Everything else in this file runs DOWNSTREAM of
     # the extractor and so cannot see what the extractor filtered out; this is
@@ -725,7 +760,8 @@ def report(result: Result, outdir: Path, doc: dict) -> int:
     meta = doc.get("extract", {})
     print(f"  source      : {meta.get('source_id')}")
     print(f"  mode        : {meta.get('mode')}")
-    print(f"  fetched at  : {meta.get('fetched_at')}")
+    print(f"  built at    : {meta.get('built_at') or meta.get('fetched_at')}")
+    print(f"  captured at : {meta.get('captured_at') or 'UNRECORDED'}")
     print(f"  schema      : {meta.get('schema_version')}   "
           f"parser: {meta.get('parser_version')}")
     total = sum(f.stat().st_size for f in outdir.glob("*.jsonld"))

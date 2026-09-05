@@ -632,6 +632,33 @@ def read_sidecar(run_dir: Path) -> dict:
     return out
 
 
+#: The two files the run-level digest leaves out. Both carry `started_at`,
+#: `finished_at` and per-artifact `fetched_at`, so a digest over them differs
+#: between two byte-identical acquisitions -- which is exactly the case
+#: de-duplication exists to detect.
+RECORD_FILES = (RUN_FILE, MANIFEST_FILE)
+
+
+def run_digest(run_dir: Path) -> str:
+    """The run's identity: sha256 over its payload files' sidecar lines.
+
+    Taken over the line `<sha256>  <rel>\\n` of every file the sidecar lists
+    EXCEPT `run.json` and `manifest.json`, sorted by path. It answers "did the
+    source serve the same bytes" and nothing else: two runs of one unchanged
+    landscape agree here and differ in every timestamp, so this -- never the
+    digest of the sidecar as written, which includes the record files -- is
+    what per-run de-duplication compares (R11). Empty when there is no sidecar,
+    because an unfinished run has no identity.
+
+    The 64-hex form is returned; print the first 16 where the repo digest and
+    the extract's content digest are also printed short.
+    """
+    listed = read_sidecar(run_dir)
+    lines = "".join(f"{listed[rel]}  {rel}\n" for rel in sorted(listed)
+                    if rel not in RECORD_FILES)
+    return hashlib.sha256(lines.encode("utf-8")).hexdigest() if lines else ""
+
+
 class _Store:
     """Reads a run in whichever form it is in, opening the payload zip once.
 

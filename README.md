@@ -152,11 +152,20 @@ change to the category allowlist both cost another full pass over the source.
 acquisition run into JSON-LD under `out/_extract/<source>/` and applies no
 selection and no rendering at all. It never fetches: the Extract workflow
 acquires first and extracts from the run it just wrote, and the same command
-re-normalises an archived run offline. The extract's `run` block names the run
-it was built from (`raw_run_id`, `raw_run_state`) and the code that acquired
-it (`commit_sha`, `repo_digest`); `check_extract.py` fails an extract that does
-not say. Run `33848524733-1`, downloaded from Drive and re-extracted, reproduces
-the content digest four live runs had produced.
+re-normalises an archived run offline. The extract's `run` block is the
+acquisition it was built from — `raw_run_id`, `raw_run_state`, and that run's
+own provenance, the commit that fetched the bytes — and its `producer` block
+is the run and commit that built the extract; since the two happen days apart
+they are two facts, and `check_extract.py` fails an extract that omits either.
+`captured_at` is the run's capture time from its record, `built_at` is this
+build's clock, and nothing downstream derives a timestamp from the second.
+A run also has one identity, `bianlib.acquire.run_digest`: sha256 over its
+payload files' sidecar lines, excluding `run.json` and `manifest.json` so two
+acquisitions of unchanged bytes agree. Run `33848524733-1`, downloaded from
+Drive and re-extracted, reproduces the content digest four live runs had
+produced; a consumer reads an extract through `bianlib.extract.read`, which
+verifies every file against `EXTRACT.sha256` first and refuses one that does
+not match.
 
 Storing the model unfiltered is the point. Selection belongs to the render
 stage, so adding a category to `INCLUDE_CATEGORIES` becomes a re-render against

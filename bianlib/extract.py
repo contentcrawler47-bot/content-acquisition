@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from bianlib import landscape as L
 from bianlib import plan as P
@@ -47,7 +48,39 @@ from bianlib import plan as P
 #: own version; stage 2 refuses an extract it does not understand. 1.9.0:
 #: `extract.run` carries lineage -- commit_sha, repo_digest, raw_run_id,
 #: raw_run_state -- naming the acquisition the extract was built from.
-SCHEMA_VERSION = "1.9.0"
+#: 1.10.0: `run` is the acquisition's provenance and nothing else; `producer`
+#: names the run and commit that BUILT the extract; `fetched_at` is retitled
+#: `built_at`, which is what it always measured; `captured_at` is the run's
+#: capture time, taken from the run record and never from the clock.
+SCHEMA_VERSION = "1.10.0"
+
+#: The provenance fields a run or a build may carry into the extract, as the
+#: schema lists them. `core.cli` reads the environment into a dict with these
+#: keys plus diagnostics (`repo_digest_error`) that do not belong in the
+#: artifact; both blocks are filtered through this set.
+PROVENANCE_KEYS = ("where", "run_id", "run_attempt", "run_number", "workflow",
+                   "repository", "url", "ref", "workflow_ref", "runner_os",
+                   "commit_sha", "repo_digest", "manifest_digest")
+
+#: Where `captured_at` comes from, stated in the artifact so a reader does
+#: not have to know (I2.11: downstream timestamps derive from a named axis).
+#: The run record's `finished_at`: the moment the capture was complete and the
+#: bytes were what the extract describes. Per-artifact `fetched_at` values in
+#: the run's manifest bound it from below.
+CAPTURED_AT_DERIVATION = "run.json finished_at of the raw run"
+
+
+def _provenance(block: dict | None, extra: tuple = ()) -> dict:
+    """A provenance block as the schema allows it: known keys, and `where`.
+
+    `core.cli` builds provenance dicts with diagnostic fields beside the
+    recorded ones (`repo_digest_error`); those are for the log, not the
+    artifact. Absent or empty means built outside CI and says so.
+    """
+    keep = set(PROVENANCE_KEYS) | set(extra)
+    out = {k: v for k, v in (block or {}).items() if k in keep}
+    out.setdefault("where", "local")
+    return out
 
 #: Bumped when parsing changes in a way that alters values for unchanged
 #: upstream data. The render cache carries a renderer version for the same
@@ -166,18 +199,27 @@ def _merge_counts(dicts) -> dict:
 def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
           insite_models=None, models_url: str = "",
           models_tried: list | None = None, geometry: dict | None = None,
-          run: dict | None = None, gate: dict | None = None) -> dict:
+          run: dict | None = None, gate: dict | None = None,
+          producer: dict | None = None,
+          captured_at: str | None = None) -> dict:
     """The extract document for a loaded landscape.
 
     Pure: takes a materialised model and returns a dict. No network, no disk,
     no environment. That is what makes it testable without reaching bian.org,
     and it is why loading stays in Landscape.load where it already was.
 
-    `run` is provenance about the CI run that produced this extract, passed in
-    rather than read from the environment — reading it here would make this
-    function environment-dependent and untestable, which is the property the
-    paragraph above exists to protect. It is excluded from `content_digest` by
-    construction, so two runs over identical content still agree.
+    `run` is the provenance of the ACQUISITION this extract was built from --
+    the run that fetched the bytes, and the code that fetched them -- plus
+    `raw_run_id` and `raw_run_state` naming it. `producer` is the provenance
+    of THIS build: the run and commit that normalised those bytes. Since
+    changeset 070 the two are different runs, days apart, and a reader of the
+    artifact needs both to walk the lineage back. `captured_at` is the run's
+    capture time, read from its record by the caller. All three are passed in
+    rather than read from the environment or the clock -- reading them here
+    would make this function environment-dependent and untestable, which is
+    the property the paragraph above exists to protect -- and all three sit
+    outside `content_digest` by construction, so two builds over identical
+    content still agree.
     """
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {MODES}")
@@ -336,21 +378,35 @@ def build(landscape: L.Landscape, source_id: str, mode: str = "model-only",
         "extract": {
             "source_id": source_id,
             "base_url": landscape.base,
-            "fetched_at": datetime.now(timezone.utc).isoformat(
+            # Two time axes, never conflated (I2.11). `built_at` is this
+            # build's wall clock and describes the processing, not the
+            # source. `captured_at` is when the run fetched the bytes, taken
+            # from the run record; it is the time a projection may derive its
+            # timestamps from, and it is null -- never the clock -- when the
+            # run does not say. Until 1.10.0 the first was named `fetched_at`
+            # and a design rested on it as capture time, which since 070 it
+            # had not been.
+            "built_at": datetime.now(timezone.utc).isoformat(
                 timespec="seconds"),
+            "captured_at": captured_at,
+            "captured_at_derivation": CAPTURED_AT_DERIVATION,
             "schema_version": SCHEMA_VERSION,
             "parser_version": PARSER_VERSION,
             "mode": mode,
             "shards": list(landscape.shards),
-            # Which CI run produced this, and since 1.9.0 which acquisition
-            # it was built from: `raw_run_id` and `raw_run_state` name the
-            # retained run, `commit_sha` and `repo_digest` the code that
-            # fetched it. Without these there is no way back from a
-            # downloaded artifact to the bytes that made it. "local" when
+            # Which acquisition this was built from: `raw_run_id` and
+            # `raw_run_state` name the retained run, and the rest is that
+            # run's own provenance -- the CI run and commit that FETCHED the
+            # bytes. Without it there is no way back from a downloaded
+            # artifact to the bytes that made it.
+            "run": _provenance(run, extra=("raw_run_id", "raw_run_state")),
+            # Which run and commit BUILT this extract from those bytes. The
+            # cache key names the normalising commit, and until 1.10.0 the
+            # extract could not confirm which one that was. "local" when
             # built outside CI, so a sandbox replay can never be mistaken for
-            # a run — a rehearsal has been recorded as a result here once
+            # a run -- a rehearsal has been recorded as a result here once
             # already.
-            "run": dict(run) if run else {"where": "local"},
+            "producer": _provenance(producer),
         },
         "status": {
             # Named states, so "absent" and "not asked for" never look alike.
@@ -740,13 +796,81 @@ def write(doc: dict, outdir, per: int = PARTITION_ITEMS) -> dict:
     }
 
 
-def read(outdir) -> dict:
+class ExtractUnreadable(Exception):
+    """The extract cannot be consumed: never finished writing, a file does
+    not match its sidecar line, or it is not the extract the caller asked
+    for. The stage-3 counterpart of `acquire.RunUnreadable`."""
+
+
+def verify(outdir, expect_digest: str | None = None) -> dict:
+    """Verify a stored extract before anything reads it. Raises on failure.
+
+    Three checks, in the order a consumer needs them (S.6): the sidecar is
+    present -- it is written last, so its absence means the write never
+    finished; every file it lists is present with the recorded digest, and no
+    `.jsonld` is present that it does not list; and, when the caller says
+    which extract it wants, the index's `content_digest` is that one. The
+    content digest is NOT recomputed from the parts here: that is the
+    producer's checker's job before the extract is handed on, and repeating
+    it on every restore would re-read every part to learn what the sidecar
+    plus the declared digest already establish.
+
+    Returns counts, so a caller can print what was verified. This used to be
+    a `sha256sum -c` step in the Render workflow, where a second consumer
+    could forget it; here every consumer gets it by reading.
+    """
+    outdir = Path(outdir)
+    sidecar = outdir / SIDECAR_FILE
+    if not sidecar.is_file():
+        raise ExtractUnreadable(
+            f"{outdir} has no {SIDECAR_FILE}: the extract never finished "
+            f"writing and is not evidence")
+    listed = {}
+    for line in sidecar.read_text(encoding="utf-8").splitlines():
+        if "  " in line:
+            digest, fname = line.split("  ", 1)
+            listed[fname] = digest
+    if INDEX_FILE not in listed:
+        raise ExtractUnreadable(f"{SIDECAR_FILE} does not list {INDEX_FILE}")
+    absent, differs = [], []
+    for fname, want in listed.items():
+        path = outdir / fname
+        if not path.is_file():
+            absent.append(fname)
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != want:
+            differs.append(fname)
+    stray = sorted(p.name for p in outdir.glob("*.jsonld")
+                   if p.name not in listed)
+    if absent or differs or stray:
+        raise ExtractUnreadable(
+            f"{outdir} does not match its {SIDECAR_FILE}: "
+            f"{len(absent)} listed but absent, {len(differs)} differ, "
+            f"{len(stray)} present but unlisted"
+            + (f" (first: {(absent + differs + stray)[0]})"))
+    declared = ""
+    if expect_digest:
+        index = json.loads((outdir / INDEX_FILE).read_text(encoding="utf-8"))
+        declared = str(index.get("content_digest", ""))
+        if not declared.startswith(expect_digest):
+            raise ExtractUnreadable(
+                f"{outdir} is extract {declared[:16] or '(undeclared)'}, "
+                f"not the {expect_digest[:16]} that was asked for")
+    return {"files": len(listed), "content_digest": declared}
+
+
+def read(outdir, verify_first: bool = True,
+         expect_digest: str | None = None) -> dict:
     """Load a partitioned extract back into one document.
 
     The inverse of write(), used by stage 2 and by tools/check_extract.py so
     that both read the extract the same way rather than each growing its own
-    idea of the layout.
+    idea of the layout. Verifies against the sidecar first (see `verify`)
+    unless told not to -- the checker turns that off so it can REPORT a bad
+    sidecar as a finding rather than stop at it; a consumer never should.
     """
+    outdir = Path(outdir)
+    if verify_first:
+        verify(outdir, expect_digest)
     index = json.loads((outdir / INDEX_FILE).read_text(encoding="utf-8"))
     doc = {k: v for k, v in index.items() if k != "parts"}
     for meta in index.get("parts", []):

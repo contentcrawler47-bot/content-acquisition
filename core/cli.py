@@ -166,7 +166,7 @@ def cmd_extract(sources, args) -> int:
     outdir = reset_dir(EXTRACT_OUT / s.id)
     print(f"Extracting {s} from {run_dir} -> {outdir}", flush=True)
     try:
-        s.build_extract(outdir, run_dir, run=ci_run(),
+        s.build_extract(outdir, run_dir, producer=build_provenance(),
                         gate_options={
                             "max_share": args.gate_max_share,
                             "max_absolute": args.gate_max_absolute,
@@ -184,15 +184,17 @@ def cmd_extract(sources, args) -> int:
     return 0
 
 
-def acquisition_provenance() -> dict:
-    """Provenance for an acquisition run: `ci_run()` plus what it lacks.
+def build_provenance() -> dict:
+    """Provenance for whatever this process builds: `ci_run()` plus the code.
 
-    The extract's `run` block is locked by its schema and stays as it is; the
-    acquisition record is new and can carry what a downloaded artifact has
-    always needed to name the code that made it -- the commit SHA and the
-    repo digest. The digest is COMPUTED over the checked-out tree by the
-    same function `tools/repo_manifest.py --verify` uses, and the manifest's
-    declared digest is recorded beside it, so a run on a dirty tree says so.
+    One builder for the acquisition record's `provenance` and the extract's
+    `producer`, so the two blocks have one shape and a reader walks from a
+    projection back to the bytes through fields with the same names. It adds
+    what a downloaded artifact has always needed to name the code that made
+    it -- the commit SHA and the repo digest. The digest is COMPUTED over the
+    checked-out tree by the same function `tools/repo_manifest.py --verify`
+    uses, and the manifest's declared digest is recorded beside it, so a run
+    on a dirty tree says so.
     """
     prov = ci_run()
     prov["commit_sha"] = os.environ.get("GITHUB_SHA", "")
@@ -246,7 +248,7 @@ def cmd_acquire(sources, args) -> int:
     print(f"Acquiring {s} -> {run_dir}  (mode {args.mode})", flush=True)
     try:
         run = A.acquire(s, run_dir, mode=args.mode,
-                        provenance=acquisition_provenance())
+                        provenance=build_provenance())
     except FileExistsError as e:
         print(f"\n  {e}", file=sys.stderr)
         return 2
@@ -323,36 +325,59 @@ def cmd_render(sources, args) -> int:
     outdir = EXTRACT_OUT / s.id
     if not (outdir / extract_mod.INDEX_FILE).is_file():
         print(f"No extract at {outdir}.", file=sys.stderr)
-        print(f"  Run: python3 run.py extract {s.id} --mode model-only",
-              file=sys.stderr)
+        print(f"  Run: python3 run.py extract {s.id} --run-dir "
+              f"out/_raw/{s.id}/<run-id>", file=sys.stderr)
         print("  Stage 2 reads stored data and never fetches; this is not a "
               "condition it can recover from.", file=sys.stderr)
         return 2
 
     print(f"Rendering {s} from {outdir}", flush=True)
-    doc = extract_mod.read(outdir)
+    # Verified INSIDE the stage, before anything is read (S.6): every file
+    # against the sidecar, and the sidecar present at all. This was a
+    # `sha256sum -c` step in the workflow, which a second consumer could
+    # forget; here it cannot be skipped. A mismatch is a failure of this
+    # stage, not a condition to read through.
+    try:
+        verified = extract_mod.verify(outdir)
+    except extract_mod.ExtractUnreadable as e:
+        print(f"\n  cannot read the extract: {e}", file=sys.stderr)
+        return 1
+    print(f"  verified  : {verified['files']} files match "
+          f"{extract_mod.SIDECAR_FILE}")
+    doc = extract_mod.read(outdir, verify_first=False)
 
     # Say WHICH extract this is before saying anything about its contents. A
     # stored extract and a freshly fetched one must never be indistinguishable
-    # after the fact, and an extract built outside CI must never pass for a run.
+    # after the fact, and an extract built outside CI must never pass for a
+    # run. Since schema 1.10.0 `producer` is the build and `run` the
+    # acquisition; before it, `run` was both at once, and is all there is.
     meta = doc.get("extract", {}) or {}
     run_meta = meta.get("run") or {}
-    print(f"  extract   : fetched {meta.get('fetched_at', 'UNKNOWN')}"
+    maker = meta.get("producer") or run_meta
+    built = meta.get("built_at") or meta.get("fetched_at", "UNKNOWN")
+    print(f"  extract   : built {built}"
+          f"  captured {meta.get('captured_at') or 'UNRECORDED'}"
           f"  mode={meta.get('mode', 'UNKNOWN')}"
-          f"  parser={meta.get('parser_version', 'UNKNOWN')}")
-    where = run_meta.get("where")
+          f"  parser={meta.get('parser_version', 'UNKNOWN')}"
+          f"  schema={meta.get('schema_version', 'UNKNOWN')}")
+    where = maker.get("where")
     if where == "github-actions":
-        print(f"  produced by: run {run_meta.get('run_id')} "
-              f"attempt {run_meta.get('run_attempt') or '?'} "
-              f"({run_meta.get('workflow') or 'unknown workflow'})")
-        if run_meta.get("url"):
-            print(f"               {run_meta['url']}")
+        print(f"  produced by: run {maker.get('run_id')} "
+              f"attempt {maker.get('run_attempt') or '?'} "
+              f"({maker.get('workflow') or 'unknown workflow'}) at commit "
+              f"{(maker.get('commit_sha') or '')[:12] or 'UNRECORDED'}")
+        if maker.get("url"):
+            print(f"               {maker['url']}")
     elif where == "local":
         print("  produced by: NOT A CI RUN — built locally")
     else:
         # Extracts written before changeset 039 carry no run block at all.
         print("  produced by: UNRECORDED — this extract predates run "
               "provenance, so it cannot be traced to a run")
+    if run_meta.get("raw_run_id"):
+        print(f"  built from : run {run_meta['raw_run_id']} "
+              f"({run_meta.get('raw_run_state') or '?'}), acquired at commit "
+              f"{(run_meta.get('commit_sha') or '')[:12] or 'UNRECORDED'}")
 
     keep, notes = None, []
     if args.add_category or args.drop_category:
