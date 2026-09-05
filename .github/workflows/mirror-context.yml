@@ -1,0 +1,219 @@
+name: Mirror project context
+
+# Copies the latest complete snapshot of content/_project-context/ out of Drive,
+# adds a generated index and manifest, encrypts it under a fresh random key,
+# and force-pushes the ciphertext to the orphan `context` branch. The key is
+# written to Drive, where only the Drive connector (acting as the user) reads
+# it. A Claude session then reads the context from the sandbox by section
+# instead of through the connector a whole file at a time.
+#
+# Two rclone remotes, deliberately: MIRROR reads with a drive.readonly token
+# pinned to the context folder, because the drive.file token cannot see files
+# the connector wrote; GDRIVE (drive.file) does the one write, the key file,
+# so that file is user-owned and visible to the connector.
+#
+# Idempotent: exits early when the latest snapshot is already mirrored, unless
+# `force`. `check_only` lists the folder and exits -- the first run after any
+# credential change. Design and reading procedure:
+# skills/content-acquisition/references/context-mirror.md.
+
+# TRIGGERS: workflow_dispatch / schedule only. Never pull_request or
+# pull_request_target -- the Actions cache is private only while no fork
+# PR can run a workflow in this repo (D-14).
+on:
+  workflow_dispatch:
+    inputs:
+      check_only:
+        description: List the snapshot folder and exit without mirroring
+        type: boolean
+        default: false
+      force:
+        description: Mirror even if already current (also rotates the key)
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 */6 * * *"     # four times a day; a no-op when nothing changed
+
+permissions:
+  # Pushes the ciphertext to the `context` branch. Declared in
+  # tools/check_workflows.py CONTENTS_WRITE_OK with this reason.
+  contents: write
+
+concurrency:
+  group: mirror-context
+  # Never cancel: a blob pushed without its key, or a key without its blob,
+  # is worse than waiting for the previous run.
+  cancel-in-progress: false
+
+env:
+  # NOT named RCLONE_VERSION: rclone maps RCLONE_<FLAG> env vars onto
+  # its own flags, so RCLONE_VERSION is read as --version (a boolean)
+  # and every rclone invocation dies with a parse error.
+  RC_VERSION: "1.71.1"
+  # content/_project-context on Drive. Pins what MIRROR can read; the token
+  # itself is drive.readonly over the account (SETUP.md 3a).
+  CONTEXT_FOLDER_ID: "183xWxwpGUnUtQhZJ2JO1h4k8lMfLLOjG"
+  KEY_REMOTE_PATH: "context-mirror/latest-key.json"
+  BRANCH: context
+
+jobs:
+  mirror:
+    name: Encrypt and publish the latest snapshot
+    runs-on: ubuntu-24.04
+    # Both Drive tokens live in this Environment (A.3/D-11).
+    environment: drive
+    timeout-minutes: 15
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Audit only: records egress, blocks nothing. Move to block
+          # once a month of audit shows no unexpected hosts (A.15).
+          egress-policy: audit
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Keeps GITHUB_TOKEN for the push to the context branch. Declared
+          # in tools/check_workflows.py PERSIST_CREDENTIALS_OK.
+          persist-credentials: true
+
+      - name: Install rclone (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          base="https://github.com/rclone/rclone/releases/download/v${RC_VERSION}"
+          pkg="rclone-v${RC_VERSION}-linux-amd64.zip"
+          curl -fsSLO "${base}/${pkg}"
+          curl -fsSLO "${base}/SHA256SUMS"
+          grep " ${pkg}\$" SHA256SUMS | sha256sum -c -
+          unzip -q "${pkg}"
+          sudo install -m 755 "rclone-v${RC_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+
+      - name: Find the latest complete snapshot
+        id: find
+        env:
+          RCLONE_CONFIG_MIRROR_TYPE: drive
+          RCLONE_CONFIG_MIRROR_SCOPE: drive.readonly
+          RCLONE_CONFIG_MIRROR_TOKEN: ${{ secrets.GDRIVE_MIRROR_TOKEN }}
+          RCLONE_CONFIG_MIRROR_ROOT_FOLDER_ID: ${{ env.CONTEXT_FOLDER_ID }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          # Folder names are zero-padded dates with an optional letter, so a
+          # text sort is a date sort. The newest folder WITH a README.md is
+          # current; one without is a failed write (see _START-HERE.md).
+          rclone lsf --dirs-only mirror: | sed 's#/$##' | sort > folders.txt
+          echo "snapshot folders on Drive: $(wc -l < folders.txt)"
+          latest=""
+          for d in $(tac folders.txt); do
+            if rclone lsf "mirror:${d}" | grep -qx 'README.md'; then latest="$d"; break; fi
+          done
+          if [ -z "$latest" ]; then echo "::error::no complete snapshot found"; exit 1; fi
+          echo "latest complete snapshot: ${latest}"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+
+          if [ "$CHECK_ONLY" = "true" ]; then
+            echo "check_only: listing ${latest} and stopping"
+            rclone lsf -R --format ps "mirror:${latest}" | sort
+            echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Already mirrored? Read the branch's MIRROR.json, if the branch exists.
+          mirrored=""
+          if git fetch --quiet --depth 1 origin "${BRANCH}" 2>/dev/null; then
+            mirrored=$(git show "FETCH_HEAD:MIRROR.json" 2>/dev/null \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("snapshot",""))' || true)
+          fi
+          echo "currently mirrored: ${mirrored:-nothing}"
+          if [ "$mirrored" = "$latest" ] && [ "$FORCE" != "true" ]; then
+            echo "already current; nothing to do"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull, index and encrypt
+        if: steps.find.outputs.proceed == 'true'
+        id: build
+        env:
+          RCLONE_CONFIG_MIRROR_TYPE: drive
+          RCLONE_CONFIG_MIRROR_SCOPE: drive.readonly
+          RCLONE_CONFIG_MIRROR_TOKEN: ${{ secrets.GDRIVE_MIRROR_TOKEN }}
+          RCLONE_CONFIG_MIRROR_ROOT_FOLDER_ID: ${{ env.CONTEXT_FOLDER_ID }}
+          LATEST: ${{ steps.find.outputs.latest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ctx
+          rclone copy "mirror:${LATEST}" "ctx/${LATEST}" --transfers 4 --checkers 8
+          test -f "ctx/${LATEST}/README.md"
+          python3 tools/context_index.py "ctx/${LATEST}" --out ctx
+          files=$(find "ctx/${LATEST}" -type f | wc -l)
+          bytes=$(du -sb "ctx/${LATEST}" | cut -f1)
+          echo "pulled ${files} files, ${bytes} bytes"
+
+          tar -C ctx -czf context.tar.gz .
+          # Fresh key every run. Passphrase via file, never argv: argv is
+          # visible to `ps` and to anything that echoes the command line.
+          openssl rand -hex 32 > key.hex
+          gpg --batch --quiet --symmetric --cipher-algo AES256 \
+              --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
+              --pinentry-mode loopback --passphrase-file key.hex \
+              -o context.tar.gz.gpg context.tar.gz
+          blob=$(sha256sum context.tar.gz.gpg | cut -d' ' -f1)
+          python3 - "$LATEST" "$files" "$bytes" "$blob" > MIRROR.json <<'PY'
+          import datetime, json, sys
+          snap, files, nbytes, blob = sys.argv[1:]
+          print(json.dumps({
+              "snapshot": snap,
+              "mirrored_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+              "files": int(files), "bytes": int(nbytes),
+              "blob": "context.tar.gz.gpg", "blob_sha256": blob,
+              "cipher": "gpg symmetric AES256, s2k SHA512",
+              "key": "Drive content/context-mirror/latest-key.json",
+              "index": "INDEX.md and MANIFEST.sha256 inside the archive",
+          }, indent=2))
+          PY
+          python3 -c 'import json,sys; print(json.dumps({"snapshot": sys.argv[1], "key": open("key.hex").read().strip()}))' \
+            "$LATEST" > latest-key.json
+          rm -f context.tar.gz key.hex
+          rm -rf ctx
+          echo "blob sha256: ${blob}"
+
+      - name: Publish the ciphertext to the context branch
+        if: steps.find.outputs.proceed == 'true'
+        env:
+          LATEST: ${{ steps.find.outputs.latest }}
+        run: |
+          set -euo pipefail
+          git config user.name "context-mirror"
+          git config user.email "context-mirror@users.noreply.github.com"
+          mkdir -p /tmp/pub
+          mv context.tar.gz.gpg MIRROR.json /tmp/pub/
+          # Orphan branch, one commit, force-pushed: no history of old ciphertext.
+          git checkout --quiet --orphan "${BRANCH}-next"
+          git rm -rfq --cached . && git clean -fdxq -e latest-key.json
+          mv /tmp/pub/* .
+          printf '%s\n' "# context" "" \
+            "Encrypted mirror of the project context snapshot named in MIRROR.json." \
+            "Read it with the procedure in skills/content-acquisition/references/context-mirror.md" \
+            "on the main branch. Nothing here is readable without the key on Drive." > README.md
+          git add context.tar.gz.gpg MIRROR.json README.md
+          git commit --quiet -m "context mirror: ${LATEST}"
+          git push --force --quiet origin "${BRANCH}-next:${BRANCH}"
+          echo "pushed ${BRANCH} for ${LATEST}"
+
+      - name: Write the key to Drive
+        if: steps.find.outputs.proceed == 'true'
+        env:
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: |
+          set -euo pipefail
+          # After the push, so a reader between the two steps fails to decrypt
+          # rather than reading a stale blob with a new key. Either way the
+          # snapshot names in MIRROR.json and the key file disagree, visibly.
+          rclone copyto latest-key.json "gdrive:${KEY_REMOTE_PATH}"
+          shred -u latest-key.json
+          echo "key written to ${KEY_REMOTE_PATH}"

@@ -64,12 +64,14 @@ CONTENTS_WRITE_OK = {
     # Moves to the Report workflow at 074, which becomes the sole committer
     # to .runs/ (D-8). Until then the keep-alive lives here.
     "landscape-bian-v14.yml": "keep-alive timestamp commit; moves to Report at 074",
+    "mirror-context.yml": "force-pushes the encrypted context mirror to the orphan context branch",
 }
 
 # job key "<file>:<job>" -> why that job's checkout keeps its credentials.
 PERSIST_CREDENTIALS_OK = {
     "apply-changeset.yml:apply": "pushes the applied changeset",
     "landscape-bian-v14.yml:assemble": "pushes the keep-alive stamp",
+    "mirror-context.yml:mirror": "pushes the context branch",
 }
 
 # Artifact uploads of Class-B content still in the repo. All three go at 072,

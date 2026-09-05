@@ -147,3 +147,32 @@ and judge the hits rather than stripping them.
 the new text is not visible until a new conversation. An installation cannot
 be verified in the session that produced it; check the hash at the start of
 the next one against `MANIFEST.sha256`.
+
+## Reading the project context
+
+**The connector read a file twice, once as base64.** `download_file_content`
+returns base64, which is both unreadable and about a third larger than the
+text; a session paid for a 15 KB handover twice before switching to
+`read_file_content`. Use `read_file_content` for anything textual on Drive.
+
+**The mirror is one snapshot behind Drive.** Expected at the start of most
+sessions: the snapshot is written at the end of one session and mirrored by the
+next scheduled run. Read the new snapshot's `README.md` to learn which files
+were written rather than copied, and fetch only those through the connector —
+or ask for a dispatch of **Mirror project context** and re-fetch.
+
+**`gpg: decryption failed: Bad session key`** on a freshly fetched blob means
+the key file and the blob come from different runs; the `snapshot` fields in
+`latest-key.json` and `MIRROR.json` will disagree. A reader caught between the
+push and the key write sees this for about a minute. Re-fetch both.
+
+**`check_only` lists nothing.** `GDRIVE_MIRROR_TOKEN` was authorised at scope
+`drive.file`, which cannot see files the connector wrote. Redo `SETUP.md` step 3a
+with scope 2 (`drive.readonly`) and confirm with the `touch` refusal test
+before extracting the token.
+
+**Seven workflows reference `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET`.** The
+secrets have never existed; the lines expand to empty strings and select
+rclone's built-in client, which is the intended path. They are inert, and are
+removed as each workflow is next touched for its own reasons (`SETUP.md`,
+Secrets section).

@@ -86,21 +86,26 @@ is committed, and nothing needs installing on your own machine.
 
 ### Shared — the Drive publisher identity
 
-| Secret | Required | Used by |
-|---|---|---|
-| `GDRIVE_TOKEN` | yes | every source's publish step, and reindex |
-| `GDRIVE_CLIENT_ID` | no | only if using your own Cloud OAuth client |
-| `GDRIVE_CLIENT_SECRET` | no | as above |
+| Secret | Required | Scope | Used by |
+|---|---|---|---|
+| `GDRIVE_TOKEN` | yes | `drive.file` | every source's publish step, reindex, and the mirror's one write |
+| `GDRIVE_MIRROR_TOKEN` | for the context mirror | `drive.readonly` | **Mirror project context** only (step 3a) |
 
 One Drive identity publishes everything, but each source syncs only to its own
 subfolder, so they cannot overwrite one another.
 
-**Omitting the two client values is the recommended path.** It selects rclone's
-built-in OAuth client, which is a published app — so refresh tokens do not
-expire. Your own client in *Testing* status expires them after seven days,
-which breaks a weekly schedule about a week in, long after anyone is still
-thinking about OAuth. The trade-off is a shared quota, immaterial for a weekly
-sync of a few dozen files.
+Both tokens come from **rclone's built-in OAuth client**, which is a published
+app, so refresh tokens do not expire. There is no `GDRIVE_CLIENT_ID` or
+`GDRIVE_CLIENT_SECRET`: a project-owned OAuth client was attempted early on and
+abandoned over free-tier configuration problems, and would in any case have
+expired its tokens after seven days while in *Testing* status. Seven workflows
+still carry `RCLONE_CONFIG_GDRIVE_CLIENT_*` lines referencing those two secrets;
+the secrets have never existed, the lines expand to empty strings and select the
+built-in client, and they are removed as each workflow is next touched. The
+trade-off of the built-in client is a shared quota, immaterial at this volume.
+
+Revoking rclone's access in the account's Google security settings revokes
+**both** tokens at once, since they share the app.
 
 ### Changesets
 
@@ -186,9 +191,8 @@ Then extract the token and add it as a repo secret:
 grep -A5 '\[gdrive\]' ~/.config/rclone/rclone.conf
 ```
 
-The entire `token = {...}` JSON → `GDRIVE_TOKEN`. If you did supply your own
-client id and secret, add those as `GDRIVE_CLIENT_ID` and
-`GDRIVE_CLIENT_SECRET` too; otherwise leave both unset.
+The entire `token = {...}` JSON → `GDRIVE_TOKEN`, as a repository secret in
+the `drive` Environment.
 
 The workflows rebuild rclone's config from environment variables at runtime, so
 no credential file is written to any runner.
@@ -196,16 +200,53 @@ no credential file is written to any runner.
 To revoke: that account's Google security settings → third-party access →
 remove, then re-run `rclone config` and update `GDRIVE_TOKEN`.
 
-#### If you would rather use your own OAuth client
+A service account is not an alternative: it needs a Google Cloud project, has
+zero Drive storage quota and cannot own files.
 
-Service accounts have zero Drive storage quota and cannot own files, so this
-route still uses an OAuth token for a real account. Signed in as the dedicated
-Gmail, in Google Cloud Console: create a project, enable the **Google Drive
-API**, set the OAuth consent screen to External and add that Gmail as a test
-user, then create an OAuth client ID of type **Desktop app**. Supply the id and
-secret at the `rclone config` prompts above.
+### 3a. Authorise the read-only mirror remote
 
-Publish the app if you take this route, or the seven-day expiry applies.
+Needed only for **Mirror project context**, which copies the project-context
+snapshot out of Drive so a Claude session can read it from the sandbox
+(`skills/content-acquisition/references/context-mirror.md`). The `drive.file`
+token cannot see files the Drive connector wrote, so this is a second token at
+scope `drive.readonly` — read everything, write nothing. Its marginal exposure
+over `GDRIVE_TOKEN`, which can already read, overwrite and delete everything
+rclone created, is read access to hand-made files: in a dedicated account, the
+design documents the mirror publishes as ciphertext anyway.
+
+Same machine and procedure as step 3, different name and scope:
+
+```
+rclone config
+# n) new remote
+# name> mirror
+# storage> drive
+# client_id> <blank>
+# client_secret> <blank>
+# scope> 2          (drive.readonly)
+# service_account_file> blank
+# advanced config> n
+# use web browser to authenticate> y   -> sign in as the dedicated Gmail
+# configure as team drive> n
+```
+
+Before extracting anything, prove the scope is what it should be:
+
+```
+rclone lsd mirror:content/_project-context                     # must list the snapshot folders
+rclone touch mirror:content/_project-context/SHOULD-FAIL.txt   # must be refused
+```
+
+An empty listing means scope 3 was chosen; a created file means the scope is
+not read-only. Delete the remote and redo either way. Then the `token = {...}`
+JSON from `rclone config show mirror` → `GDRIVE_MIRROR_TOKEN`, as an
+**Environment** secret under `drive` — `tools/check_workflows.py` refuses a
+`GDRIVE_*` reference anywhere else — and delete the remote from that machine.
+
+First run: Actions → **Mirror project context** → `check_only: true`. The log
+lists the folder or names which of the above went wrong. A step-by-step version
+for Windows and PowerShell is in the project context on Drive under
+`playbooks/`.
 
 ### 4. Check the two halves separately in Actions
 
