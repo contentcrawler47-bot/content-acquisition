@@ -1,0 +1,11 @@
+{
+  "snapshot": "2026-09-06a",
+  "mirrored_at": "2026-09-05T19:25:58+00:00",
+  "files": 39,
+  "bytes": 731566,
+  "blob": "context.tar.gz.gpg",
+  "blob_sha256": "30d2d4863172b04c5bc73c1dbf9cc11965123046ee320ad2426dfc844c98fedf",
+  "cipher": "gpg symmetric AES256, s2k SHA512",
+  "key": "Drive context-mirror/latest-key.json",
+  "index": "INDEX.md and MANIFEST.sha256 inside the archive"
+}
